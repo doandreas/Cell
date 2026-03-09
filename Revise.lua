@@ -14,7 +14,15 @@ function F.Revise()
         F.Debug("CharaDBRevision:", charaDbRevision)
     end
 
+    print("|cff00ccff[Cell Debug]|r Revise() called - dbRevision:", dbRevision, "MIN_VERSION:", Cell.MIN_VERSION)
+    if CellDB["revise"] then
+        print("|cff00ccff[Cell Debug]|r CellDB['revise'] =", CellDB["revise"], "| dbRevision < MIN_VERSION?", dbRevision < Cell.MIN_VERSION)
+    else
+        print("|cff00ccff[Cell Debug]|r CellDB['revise'] is nil (fresh install)")
+    end
+
     if CellDB["revise"] and dbRevision < Cell.MIN_VERSION then -- update from an unsupported version
+        print("|cffff0000[Cell Debug]|r RESET TRIGGERED! dbRevision", dbRevision, "< MIN_VERSION", Cell.MIN_VERSION)
         local f = CreateFrame("Frame")
         f:RegisterEvent("PLAYER_ENTERING_WORLD")
         f:SetScript("OnEvent", function()
@@ -28,6 +36,7 @@ function F.Revise()
         end)
         return
     end
+    print("|cff00ff00[Cell Debug]|r Version check passed, proceeding with revision updates")
 
     if CellCharacterDB and CellCharacterDB["revise"] and charaDbRevision < Cell.MIN_VERSION then -- update from an unsupported version
         local f = CreateFrame("Frame")

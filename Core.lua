@@ -31,7 +31,7 @@ local P = Cell.pixelPerfectFuncs
 local L = Cell.L
 
 -- sharing version check
-Cell.MIN_VERSION = 275
+Cell.MIN_VERSION = 246
 Cell.MIN_CLICKCASTINGS_VERSION = 275
 Cell.MIN_LAYOUTS_VERSION = 275
 Cell.MIN_INDICATORS_VERSION = 275
