@@ -25,16 +25,6 @@ local UnitHealthMax = UnitHealthMax
 local UnitGetIncomingHeals = UnitGetIncomingHeals
 local UnitGetTotalAbsorbs = UnitGetTotalAbsorbs
 local UnitGetTotalHealAbsorbs = UnitGetTotalHealAbsorbs
--- 12.0+ APIs for secret value support
-local issecretvalue = issecretvalue or function() return false end
-local function SafeBoolTest(val)
-    local ok, r = pcall(function(v) if v then return true else return false end end, val)
-    if ok then return r end
-    return false
-end
-local UnitHealthPercent = UnitHealthPercent
-local CreateUnitHealPredictionCalculator = CreateUnitHealPredictionCalculator
-local UnitGetDetailedHealPrediction = UnitGetDetailedHealPrediction
 local UnitIsFriend = UnitIsFriend
 local UnitIsUnit = UnitIsUnit
 local UnitIsPlayer = UnitIsPlayer
@@ -70,13 +60,18 @@ local UnitPhaseReason = UnitPhaseReason
 -- local UnitDebuff = UnitDebuff
 local IsInRaid = IsInRaid
 local UnitDetailedThreatSituation = UnitDetailedThreatSituation
-local CombatLogGetCurrentEventInfo = CombatLogGetCurrentEventInfo -- nil in 12.0+
-local _GetAuraDataByAuraInstanceID = C_UnitAuras.GetAuraDataByAuraInstanceID
+local GetAuraDataByAuraInstanceID = C_UnitAuras.GetAuraDataByAuraInstanceID
 local GetAuraSlots = C_UnitAuras.GetAuraSlots
-local _GetAuraDataBySlot = C_UnitAuras.GetAuraDataBySlot
--- wrapped versions applied after SanitizeAura is defined (see below)
-local GetAuraDataByAuraInstanceID, GetAuraDataBySlot
+local GetAuraDataBySlot = C_UnitAuras.GetAuraDataBySlot
 local IsDelveInProgress = C_PartyInfo.IsDelveInProgress
+local UnitGetDetailedHealPrediction = UnitGetDetailedHealPrediction  -- nil pre-12.0
+local CreateUnitHealPredictionCalculator = CreateUnitHealPredictionCalculator  -- nil pre-12.0
+local issecretvalue = issecretvalue or function() return false end
+local function SafeBoolTest(val)
+    local ok, r = pcall(function(v) if v then return true else return false end end, val)
+    if ok then return r end
+    return false
+end
 
 --! for AI followers, UnitClassBase is buggy
 local UnitClassBase = function(unit)
@@ -87,64 +82,37 @@ local barAnimationType, highlightEnabled, predictionEnabled
 local shieldEnabled, overshieldEnabled, overshieldReverseFillEnabled
 local absorbEnabled, absorbInvertColor
 
--- 12.0+ smooth StatusBar animation via C-level interpolation
-local smoothInterpolation = Enum and Enum.StatusBarInterpolation
-    and Enum.StatusBarInterpolation.ExponentialEaseOut or nil
-local function SetBarValueSmooth(bar, value)
-    if smoothInterpolation then
-        bar:SetValue(value, smoothInterpolation)
-    else
-        bar:SetValue(value)
+-- Midnight: Curve for CELL_FADE_OUT_HEALTH_PERCENT feature
+-- Maps health percent â†’ alpha so we can evaluate secret health% without comparisons
+local fadeOutHealthCurve
+local fadeOutHealthCurve_threshold -- track last threshold to know when to rebuild
+local fadeOutHealthCurve_alpha -- track last outOfRangeAlpha to know when to rebuild
+
+-- Builds/rebuilds the fade-out health curve when threshold or alpha changes.
+-- health% < threshold â†’ alpha 1.0 (fully visible, needs healing)
+-- health% >= threshold â†’ outOfRangeAlpha (faded out, healthy enough)
+local function RebuildFadeOutHealthCurve()
+    if not Cell.isMidnight or not C_CurveUtil then return end
+    local threshold = CELL_FADE_OUT_HEALTH_PERCENT
+    local alpha = CellDB and CellDB["appearance"] and CellDB["appearance"]["outOfRangeAlpha"] or 0.4
+    if not threshold then
+        fadeOutHealthCurve = nil
+        fadeOutHealthCurve_threshold = nil
+        fadeOutHealthCurve_alpha = nil
+        return
     end
-end
-
-local CheckCLEURequired
-
--------------------------------------------------
--- 12.0+ secret value sanitizer for aura data
--------------------------------------------------
-local function SanitizeAura(aura)
-    if not aura then return nil end
-    local ok, clean = pcall(function()
-        local t = {}
-        -- copy all fields, forcing evaluation to catch secrets
-        t.name = aura.name and (aura.name .. "")
-        t.icon = aura.icon
-        t.applications = aura.applications and (aura.applications + 0) or 0
-        t.expirationTime = aura.expirationTime and (aura.expirationTime + 0) or 0
-        t.duration = aura.duration and (aura.duration + 0) or 0
-        t.spellId = aura.spellId and (aura.spellId + 0)
-        t.auraInstanceID = aura.auraInstanceID and (aura.auraInstanceID + 0)
-        t.sourceUnit = aura.sourceUnit
-        t.dispelName = aura.dispelName
-        t.isHelpful = aura.isHelpful and true or false
-        t.isHarmful = aura.isHarmful and true or false
-        t.isBossAura = aura.isBossAura and true or false
-        t.isRaid = aura.isRaid and true or false
-        t.isStealable = aura.isStealable and true or false
-        t.isFromPlayerOrPlayerPet = aura.isFromPlayerOrPlayerPet and true or false
-        t.canApplyAura = aura.canApplyAura and true or false
-        t.nameplateShowAll = aura.nameplateShowAll and true or false
-        t.nameplateShowPersonal = aura.nameplateShowPersonal and true or false
-        t.canActivePlayerDispel = aura.canActivePlayerDispel and true or false
-        t.timeMod = aura.timeMod and (aura.timeMod + 0) or 1
-        t.points = aura.points
-        -- preserve fields used by Cell
-        t.refreshing = aura.refreshing
-        t.oldExpirationTime = aura.oldExpirationTime
-        t.oldApplications = aura.oldApplications
-        return t
-    end)
-    if not ok then return nil end
-    return clean
-end
-
--- wrap aura data retrieval to sanitize secret values
-GetAuraDataByAuraInstanceID = function(unit, id)
-    return SanitizeAura(_GetAuraDataByAuraInstanceID(unit, id))
-end
-GetAuraDataBySlot = function(unit, slot)
-    return SanitizeAura(_GetAuraDataBySlot(unit, slot))
+    if fadeOutHealthCurve and fadeOutHealthCurve_threshold == threshold and fadeOutHealthCurve_alpha == alpha then
+        return -- no change needed
+    end
+    fadeOutHealthCurve = C_CurveUtil.CreateCurve()
+    -- Below threshold: fully visible (unit needs healing)
+    fadeOutHealthCurve:AddPoint(0.0, 1.0)
+    fadeOutHealthCurve:AddPoint(threshold - 0.001, 1.0)
+    -- At/above threshold: faded out (unit is healthy enough)
+    fadeOutHealthCurve:AddPoint(threshold, alpha)
+    fadeOutHealthCurve:AddPoint(1.0, alpha)
+    fadeOutHealthCurve_threshold = threshold
+    fadeOutHealthCurve_alpha = alpha
 end
 
 -------------------------------------------------
@@ -185,8 +153,6 @@ end
 local function ResetIndicators()
     wipe(enabledIndicators)
     wipe(indicatorNums)
-
-    CheckCLEURequired()
 
     for _, t in next, Cell.vars.currentLayoutTable["indicators"] do
         -- update enabled
@@ -1150,11 +1116,31 @@ end
 -------------------------------------------------
 local function UpdateAuraRefreshState(auraInfo)
     if Cell.vars.iconAnimation == "duration" then
-        local timeIncreased = auraInfo.oldExpirationTime and ((auraInfo.expirationTime or 0) - auraInfo.oldExpirationTime >= 0.5) or false
-        local countIncreased = auraInfo.oldApplications and (auraInfo.applications > auraInfo.oldApplications) or false
+        local timeIncreased, countIncreased
+        if Cell.isMidnight and (
+            not F.IsValueNonSecret(auraInfo.expirationTime)
+            or not F.IsValueNonSecret(auraInfo.oldExpirationTime)
+            or not F.IsValueNonSecret(auraInfo.applications)
+            or not F.IsValueNonSecret(auraInfo.oldApplications)
+        ) then
+            -- One or more fields are secret: can't do arithmetic/comparison (Midnight 12.0.0+)
+            timeIncreased = false
+            countIncreased = false
+        else
+            timeIncreased = auraInfo.oldExpirationTime and ((auraInfo.expirationTime or 0) - auraInfo.oldExpirationTime >= 0.5) or false
+            countIncreased = auraInfo.oldApplications and (auraInfo.applications > auraInfo.oldApplications) or false
+        end
         auraInfo.refreshing = timeIncreased or countIncreased
     elseif Cell.vars.iconAnimation == "stack" then
-        auraInfo.refreshing = auraInfo.oldApplications and (auraInfo.applications > auraInfo.oldApplications) or false
+        if Cell.isMidnight and (
+            not F.IsValueNonSecret(auraInfo.applications)
+            or not F.IsValueNonSecret(auraInfo.oldApplications)
+        ) then
+            -- Secret applications: can't compare (Midnight 12.0.0+)
+            auraInfo.refreshing = false
+        else
+            auraInfo.refreshing = auraInfo.oldApplications and (auraInfo.applications > auraInfo.oldApplications) or false
+        end
     else
         auraInfo.refreshing = false
     end
@@ -1188,12 +1174,23 @@ end
 local function HandleDebuff(self, auraInfo)
     local auraInstanceID = auraInfo.auraInstanceID
     local name = auraInfo.name
+    -- auraInfo.icon may be a secret fileID on Midnight 12.0.0+
+    -- SetTexture() accepts secret numbers, so this works as-is
     local icon = auraInfo.icon
     local count = auraInfo.applications
-    local debuffType = auraInfo.dispelName or ""
+    -- Midnight 12.0.0+: dispelName may be secret (truthy, so `or ""` won't help); sanitize it
+    local debuffType = (auraInfo.dispelName and (not issecretvalue or not issecretvalue(auraInfo.dispelName))) and auraInfo.dispelName or ""
     local expirationTime = auraInfo.expirationTime or 0
-    local start = expirationTime - auraInfo.duration
     local duration = auraInfo.duration
+    -- Midnight 12.0.0+: expirationTime and duration may be secret even when spellId is not.
+    -- Guard per-field: non-secret temporal fields get proper duration/cooldown display.
+    local start
+    if F.IsValueNonSecret(expirationTime) and F.IsValueNonSecret(duration) then
+        start = expirationTime - duration
+    else
+        start = 0
+        duration = 0
+    end
     local source = auraInfo.sourceUnit
     local spellId = auraInfo.spellId
     -- local attribute = auraInfo.points[1] -- UnitAura:arg16
@@ -1201,16 +1198,26 @@ local function HandleDebuff(self, auraInfo)
     auraInfo.refreshing = false
 
     -- check Bleed
+    -- On Midnight in restricted context, spellId may be secret; I.CheckDebuffType guards internally
     debuffType = I.CheckDebuffType(debuffType, spellId)
 
     if duration then
         UpdateAuraRefreshState(auraInfo)
         self._debuffs_cache[auraInstanceID] = auraInfo
 
-        if enabledIndicators["debuffs"] and not Cell.vars.debuffBlacklist[spellId] then
+        local isBig = false
+        local isBlacklisted = false
+        local isDispelBlacklisted = false
+        if F.IsAuraNonSecret(auraInfo) then
+            isBig = spellId and Cell.vars.bigDebuffs[spellId] or false
+            isBlacklisted = spellId and Cell.vars.debuffBlacklist[spellId] or false
+            isDispelBlacklisted = spellId and Cell.vars.dispelBlacklist[spellId] or false
+        end
+
+        if enabledIndicators["debuffs"] and not isBlacklisted then
             -- all debuffs / only dispellableByMe
             if not indicatorBooleans["debuffs"] or I.CanDispel(debuffType) then
-                if Cell.vars.bigDebuffs[spellId] then
+                if isBig then
                     self._debuffs_big[auraInstanceID] = true
                 else
                     self._debuffs_normal[auraInstanceID] = true
@@ -1241,7 +1248,7 @@ local function HandleDebuff(self, auraInfo)
             -- all dispels / only dispellableByMe
             if not indicatorBooleans ["dispels"]["dispellableByMe"] or I.CanDispel(debuffType) then
                 if indicatorBooleans["dispels"][debuffType] then
-                    if Cell.vars.dispelBlacklist[spellId] then
+                    if isDispelBlacklisted then
                         -- no highlight
                         self._debuffs_dispel[debuffType] = false
                     else
@@ -1260,22 +1267,25 @@ local function HandleDebuff(self, auraInfo)
             self._debuffs_normal[auraInstanceID] = nil
         end
 
-        -- resurrections: 图腾复生/复生
-        if spellId == 255234 or spellId == 225080 then
-            -- NOTE: this rez lasts longer than the debuff
-            self._debuffs.resurrectionFound = true
-            self.states.hasRezDebuff = true
-        end
+        -- Per-aura check: only compare spellId if non-secret
+        if F.IsAuraNonSecret(auraInfo) then
+            -- resurrections: å›¾è…¾å¤ç”Ÿ/å¤ç”Ÿ
+            if spellId == 255234 or spellId == 225080 then
+                -- NOTE: this rez lasts longer than the debuff
+                self._debuffs.resurrectionFound = true
+                self.states.hasRezDebuff = true
+            end
 
-        -- BG orbs
-        if spellId == 121164 then
-            self.states.BGOrb = "blue"
-        elseif spellId == 121175 then
-            self.states.BGOrb = "purple"
-        elseif spellId == 121176 then
-            self.states.BGOrb = "green"
-        elseif spellId == 121177 then
-            self.states.BGOrb = "orange"
+            -- BG orbs
+            if spellId == 121164 then
+                self.states.BGOrb = "blue"
+            elseif spellId == 121175 then
+                self.states.BGOrb = "purple"
+            elseif spellId == 121176 then
+                self.states.BGOrb = "green"
+            elseif spellId == 121177 then
+                self.states.BGOrb = "orange"
+            end
         end
     end
 end
@@ -1325,23 +1335,33 @@ local function UnitButton_UpdateDebuffs(self, isFullUpdate)
             local auraInstanceID = self._debuffs_raid[i]
             if auraInstanceID then
                 local auraInfo = self._debuffs_cache[auraInstanceID]
-                self.indicators.raidDebuffs[i]:SetCooldown(
-                    (auraInfo.expirationTime or 0) - auraInfo.duration,
-                    auraInfo.duration,
-                    auraInfo.dispelName or "",
-                    auraInfo.icon,
-                    auraInfo.applications,
-                    auraInfo.refreshing,
-                    I.IsDebuffUseElapsedTime(auraInfo.name, auraInfo.spellId)
-                )
-                self.indicators.raidDebuffs[i].auraInstanceID = auraInstanceID -- NOTE: for tooltip
-                startIndex = startIndex + 1
-                -- remove from debuffs
-                self._debuffs_big[auraInstanceID] = nil
-                self._debuffs_normal[auraInstanceID] = nil
+                if auraInfo then
+                    local rdStart, rdDur
+                    if F.IsValueNonSecret(auraInfo.expirationTime) and F.IsValueNonSecret(auraInfo.duration) then
+                        rdStart = (auraInfo.expirationTime or 0) - auraInfo.duration
+                        rdDur = auraInfo.duration
+                    else
+                        rdStart = 0
+                        rdDur = 0
+                    end
+                    self.indicators.raidDebuffs[i]:SetCooldown(
+                        rdStart,
+                        rdDur,
+                        (auraInfo.dispelName and (not issecretvalue or not issecretvalue(auraInfo.dispelName))) and auraInfo.dispelName or "",
+                        auraInfo.icon,
+                        auraInfo.applications,
+                        auraInfo.refreshing,
+                        I.IsDebuffUseElapsedTime(auraInfo.name, auraInfo.spellId)
+                    )
+                    self.indicators.raidDebuffs[i].auraInstanceID = auraInstanceID -- NOTE: for tooltip
+                    startIndex = startIndex + 1
+                    -- remove from debuffs
+                    self._debuffs_big[auraInstanceID] = nil
+                    self._debuffs_normal[auraInstanceID] = nil
 
-                if i == 1 then -- top
-                    topAuraInstanceID = auraInstanceID
+                    if i == 1 then -- top
+                        topAuraInstanceID = auraInstanceID
+                    end
                 end
             end
         end
@@ -1392,26 +1412,42 @@ local function UnitButton_UpdateDebuffs(self, isFullUpdate)
         -- bigDebuffs first
         for auraInstanceID in next, self._debuffs_big do
             local auraInfo = self._debuffs_cache[auraInstanceID]
-            if startIndex <= indicatorNums["debuffs"] then
+            if auraInfo and startIndex <= indicatorNums["debuffs"] then
                 -- start, duration, debuffType, texture, count
-                self.indicators.debuffs[startIndex]:SetCooldown((auraInfo.expirationTime or 0) - auraInfo.duration, auraInfo.duration, auraInfo.dispelName or "", auraInfo.icon, auraInfo.applications, auraInfo.refreshing, true)
+                local bStart, bDur
+                if F.IsValueNonSecret(auraInfo.expirationTime) and F.IsValueNonSecret(auraInfo.duration) then
+                    bStart = (auraInfo.expirationTime or 0) - auraInfo.duration
+                    bDur = auraInfo.duration
+                else
+                    bStart = 0
+                    bDur = 0
+                end
+                self.indicators.debuffs[startIndex]:SetCooldown(bStart, bDur, (auraInfo.dispelName and (not issecretvalue or not issecretvalue(auraInfo.dispelName))) and auraInfo.dispelName or "", auraInfo.icon, auraInfo.applications, auraInfo.refreshing, true)
                 self.indicators.debuffs[startIndex].auraInstanceID = auraInstanceID -- NOTE: for tooltip
                 self.indicators.debuffs[startIndex].spellId = auraInfo.spellId -- NOTE: for blacklist
                 startIndex = startIndex + 1
-            else
+            elseif startIndex > indicatorNums["debuffs"] then
                 break
             end
         end
         -- then normal debuffs
         for auraInstanceID in next, self._debuffs_normal do
             local auraInfo = self._debuffs_cache[auraInstanceID]
-            if startIndex <= indicatorNums["debuffs"] then
+            if auraInfo and startIndex <= indicatorNums["debuffs"] then
                 -- start, duration, debuffType, texture, count
-                self.indicators.debuffs[startIndex]:SetCooldown((auraInfo.expirationTime or 0) - auraInfo.duration, auraInfo.duration, auraInfo.dispelName or "", auraInfo.icon, auraInfo.applications, auraInfo.refreshing)
+                local nStart, nDur
+                if F.IsValueNonSecret(auraInfo.expirationTime) and F.IsValueNonSecret(auraInfo.duration) then
+                    nStart = (auraInfo.expirationTime or 0) - auraInfo.duration
+                    nDur = auraInfo.duration
+                else
+                    nStart = 0
+                    nDur = 0
+                end
+                self.indicators.debuffs[startIndex]:SetCooldown(nStart, nDur, (auraInfo.dispelName and (not issecretvalue or not issecretvalue(auraInfo.dispelName))) and auraInfo.dispelName or "", auraInfo.icon, auraInfo.applications, auraInfo.refreshing)
                 self.indicators.debuffs[startIndex].auraInstanceID = auraInstanceID -- NOTE: for tooltip
                 self.indicators.debuffs[startIndex].spellId = auraInfo.spellId -- NOTE: for blacklist
                 startIndex = startIndex + 1
-            else
+            elseif startIndex > indicatorNums["debuffs"] then
                 break
             end
         end
@@ -1459,12 +1495,22 @@ local function HandleBuff(self, auraInfo)
 
     local auraInstanceID = auraInfo.auraInstanceID
     local name = auraInfo.name
+    -- auraInfo.icon may be a secret fileID on Midnight 12.0.0+
+    -- SetTexture() accepts secret numbers, so this works as-is
     local icon = auraInfo.icon
     local count = auraInfo.applications
     -- local debuffType = auraInfo.isHarmful and auraInfo.dispelName
     local expirationTime = auraInfo.expirationTime or 0
-    local start = expirationTime - auraInfo.duration
     local duration = auraInfo.duration
+    -- Midnight 12.0.0+: expirationTime and duration may be secret even when spellId is not.
+    -- Guard per-field: non-secret temporal fields get proper duration/cooldown display.
+    local start
+    if F.IsValueNonSecret(expirationTime) and F.IsValueNonSecret(duration) then
+        start = expirationTime - duration
+    else
+        start = 0
+        duration = 0
+    end
     local source = auraInfo.sourceUnit
     local spellId = auraInfo.spellId
     -- local attribute = auraInfo.points[1] -- UnitAura:arg16
@@ -1514,11 +1560,14 @@ local function HandleBuff(self, auraInfo)
         -- user created indicators
         I.UpdateCustomIndicators(self, auraInfo)
 
-        -- check BG flags for statusIcon
-        if spellId == 156621 then
-            self.states.BGFlag = "alliance"
-        elseif spellId == 156618 then
-            self.states.BGFlag = "horde"
+        -- Per-aura check: only compare spellId if non-secret
+        if F.IsAuraNonSecret(auraInfo) then
+            -- check BG flags for statusIcon
+            if spellId == 156621 then
+                self.states.BGFlag = "alliance"
+            elseif spellId == 156618 then
+                self.states.BGFlag = "horde"
+            end
         end
     end
 end
@@ -1629,22 +1678,10 @@ end
 
 -------------------------------------------------
 -- check auras using CLEU
+-- NOTE: COMBAT_LOG_EVENT_UNFILTERED is unavailable on Midnight (12.0.0+).
+-- CheckCLEURequired has been removed; the cleu frame is guarded below.
 -------------------------------------------------
 local cleu = CreateFrame("Frame")
-
-function CheckCLEURequired()
-    -- CLEU (CombatLogGetCurrentEventInfo) removed in 12.0+
-    if not CombatLogGetCurrentEventInfo then return end
-
-    if (Cell.vars.currentLayoutTable.indicators[Cell.defaults.indicatorIndices.externalCooldowns].enabled
-        or Cell.vars.currentLayoutTable.indicators[Cell.defaults.indicatorIndices.defensiveCooldowns].enabled
-        or Cell.vars.currentLayoutTable.indicators[Cell.defaults.indicatorIndices.allCooldowns].enabled)
-        and (I.IsDefensiveCooldown(55342) or I.IsExternalCooldown(414660)) then
-        cleu:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-    else
-        cleu:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-    end
-end
 
 local function UpdateMirrorImage(b, event)
     if event == "SPELL_AURA_APPLIED" then
@@ -1658,9 +1695,9 @@ local function UpdateMirrorImage(b, event)
 end
 
 local SelfBarriers = {
-    [11426] = true, -- 寒冰护体 (self)
-    [235313] = true, -- 烈焰护体 (self)
-    [235450] = true, -- 棱光护体 (self)
+    [11426] = true, -- å¯’å†°æŠ¤ä½“ (self)
+    [235313] = true, -- çƒˆç„°æŠ¤ä½“ (self)
+    [235450] = true, -- æ£±å…‰æŠ¤ä½“ (self)
 }
 
 local function UpdateMassBarrier(b, event)
@@ -1687,48 +1724,26 @@ local function UpdateMassBarrier(b, event)
     end
 end
 
-cleu:SetScript("OnEvent", function()
-    if not CombatLogGetCurrentEventInfo then return end
-    local ok, _, subEvent, _, sourceGUID, _, sourceFlags, _, _, _, destFlags, _, spellId = pcall(CombatLogGetCurrentEventInfo)
-    if not ok then return end
+-- CLEU-based indicator tracking (mirror image, mass barrier).
+-- Unavailable on Midnight (12.0.0+); guarded by Cell.isMidnight.
+if not Cell.isMidnight then
+    cleu:SetScript("OnEvent", function()
+        local _, subEvent, _, sourceGUID, _, sourceFlags, _, _, _, destFlags, _, spellId = CombatLogGetCurrentEventInfo()
 
-    -- mirror image
-    if spellId == 55342 and F.IsFriend(sourceFlags) then
-        F.HandleUnitButton("guid", sourceGUID, UpdateMirrorImage, subEvent)
-    end
+        -- mirror image
+        if spellId == 55342 and F.IsFriend(sourceFlags) then
+            F.HandleUnitButton("guid", sourceGUID, UpdateMirrorImage, subEvent)
+        end
 
-    -- mass barrier (self), SPELL_CAST_SUCCESS
-    if spellId == 414660 and F.IsFriend(sourceFlags) then
-        F.HandleUnitButton("guid", sourceGUID, UpdateMassBarrier, "SPELL_CAST_SUCCESS")
-    end
-    if (subEvent == "SPELL_AURA_REMOVED" or subEvent == "SPELL_AURA_REFRESH") and SelfBarriers[spellId] and F.IsFriend(sourceFlags) then
-        F.HandleUnitButton("guid", sourceGUID, UpdateMassBarrier, "SPELL_AURA_REMOVED")
-    end
-
-    -- CLEU auras
-    -- if I.CheckCleuAura(spellId) and F.IsFriend(destFlags) then
-    --     local b1, b2 = F.GetUnitButtonByGUID(sourceGUID)
-    --     if subEvent == "SPELL_AURA_APPLIED" then
-    --         if b1 and b1.states.unit then
-    --             cleuUnits[b1.states.unit] = {GetTime(), unpack(I.CheckCleuAura(spellId))}
-    --             UnitButton_UpdateDebuffs(b1)
-    --         end
-    --         if b2 and b2.states.unit then
-    --             cleuUnits[b2.states.unit] = {GetTime(), unpack(I.CheckCleuAura(spellId))}
-    --             UnitButton_UpdateDebuffs(b2)
-    --         end
-    --     elseif subEvent == "SPELL_AURA_REMOVED" then
-    --         if b1 and b1.states.unit then
-    --             cleuUnits[b1.states.unit] = nil
-    --             UnitButton_UpdateDebuffs(b1)
-    --         end
-    --         if b2 and b2.states.unit then
-    --             cleuUnits[b2.states.unit] = nil
-    --             UnitButton_UpdateDebuffs(b2)
-    --         end
-    --     end
-    -- end
-end)
+        -- mass barrier (self), SPELL_CAST_SUCCESS
+        if spellId == 414660 and F.IsFriend(sourceFlags) then
+            F.HandleUnitButton("guid", sourceGUID, UpdateMassBarrier, "SPELL_CAST_SUCCESS")
+        end
+        if (subEvent == "SPELL_AURA_REMOVED" or subEvent == "SPELL_AURA_REFRESH") and SelfBarriers[spellId] and F.IsFriend(sourceFlags) then
+            F.HandleUnitButton("guid", sourceGUID, UpdateMassBarrier, "SPELL_AURA_REMOVED")
+        end
+    end)
+end
 
 -------------------------------------------------
 -- functions
@@ -1746,14 +1761,16 @@ UnitButton_UpdateAuras = function(self, updateInfo)
         UnitButton_UpdateBuffs(self, true)
         UnitButton_UpdateDebuffs(self, true)
     else
-        -- partial update
+        -- Midnight 12.0.0+: some aura fields may still be secret. Per-aura checks in
+        -- HandleBuff/HandleDebuff handle this. We no longer force full update for ALL
+        -- Midnight aura events â€” only fall back to full update if we encounter secret
+        -- isHelpful/isHarmful fields in addedAuras that prevent classification.
         local buffsChanged, debuffsChanged
         wipe(self._missing_auras)
 
         if updateInfo.addedAuras then
-            for _, rawAura in next, updateInfo.addedAuras do
-                local aura = SanitizeAura(rawAura)
-                if aura then
+            for _, aura in next, updateInfo.addedAuras do
+                if F.IsAuraNonSecret(aura) then
                     if aura.isHelpful then
                         buffsChanged = true
                         self._buffs_cache[aura.auraInstanceID] = aura
@@ -1762,31 +1779,51 @@ UnitButton_UpdateAuras = function(self, updateInfo)
                         debuffsChanged = true
                         self._debuffs_cache[aura.auraInstanceID] = aura
                     end
+                else
+                    -- Secret aura: can't classify as buff/debuff; force full update
+                    UnitButton_UpdateBuffs(self, true)
+                    UnitButton_UpdateDebuffs(self, true)
+                    I.UpdateStatusIcon(self)
+                    return
                 end
             end
         end
 
         if updateInfo.updatedAuraInstanceIDs then
             local aura
+            -- auraInstanceID is NOT secret and is safe to use as table key
             for _, auraInstanceID in next, updateInfo.updatedAuraInstanceIDs do
                 if self._buffs_cache[auraInstanceID] then
                     buffsChanged = true
                     aura = GetAuraDataByAuraInstanceID(unit, auraInstanceID)
                     if aura then
-                        aura.oldExpirationTime = self._buffs_cache[auraInstanceID].expirationTime or 0
-                        aura.oldApplications = self._buffs_cache[auraInstanceID].applications
+                        if F.IsAuraNonSecret(aura) then
+                            -- Sanitize cached values: they may be secret even if new aura's spellId is not
+                            local cachedExp = self._buffs_cache[auraInstanceID].expirationTime
+                            local cachedApp = self._buffs_cache[auraInstanceID].applications
+                            aura.oldExpirationTime = (cachedExp and F.IsValueNonSecret(cachedExp)) and cachedExp or 0
+                            aura.oldApplications = (cachedApp and F.IsValueNonSecret(cachedApp)) and cachedApp or nil
+                        end
                         self._buffs_cache[auraInstanceID] = aura
                     end
                 elseif self._debuffs_cache[auraInstanceID] then
                     debuffsChanged = true
                     aura = GetAuraDataByAuraInstanceID(unit, auraInstanceID)
                     if aura then
-                        aura.oldExpirationTime = self._debuffs_cache[auraInstanceID].expirationTime or 0
-                        aura.oldApplications = self._debuffs_cache[auraInstanceID].applications
+                        if F.IsAuraNonSecret(aura) then
+                            -- Sanitize cached values: they may be secret even if new aura's spellId is not
+                            local cachedExp = self._debuffs_cache[auraInstanceID].expirationTime
+                            local cachedApp = self._debuffs_cache[auraInstanceID].applications
+                            aura.oldExpirationTime = (cachedExp and F.IsValueNonSecret(cachedExp)) and cachedExp or 0
+                            aura.oldApplications = (cachedApp and F.IsValueNonSecret(cachedApp)) and cachedApp or nil
+                        end
                         self._debuffs_cache[auraInstanceID] = aura
                     end
                 else
-                    self._missing_auras[auraInstanceID] = GetAuraDataByAuraInstanceID(unit, auraInstanceID)
+                    aura = GetAuraDataByAuraInstanceID(unit, auraInstanceID)
+                    if aura then
+                        self._missing_auras[auraInstanceID] = aura
+                    end
                 end
             end
         end
@@ -1807,13 +1844,17 @@ UnitButton_UpdateAuras = function(self, updateInfo)
 
         if next(self._missing_auras) then
             for _, aura in next, self._missing_auras do
-                if aura and aura.isHelpful then
-                    buffsChanged = true
-                    self._buffs_cache[aura.auraInstanceID] = aura
-                elseif aura and aura.isHarmful then
-                    debuffsChanged = true
-                    self._debuffs_cache[aura.auraInstanceID] = aura
+                if F.IsAuraNonSecret(aura) then
+                    if aura.isHelpful then
+                        buffsChanged = true
+                        self._buffs_cache[aura.auraInstanceID] = aura
+                    elseif aura.isHarmful then
+                        debuffsChanged = true
+                        self._debuffs_cache[aura.auraInstanceID] = aura
+                    end
                 end
+                -- Secret missing auras are silently dropped â€” they'll be
+                -- picked up on the next full update if needed
             end
         end
 
@@ -1824,76 +1865,107 @@ UnitButton_UpdateAuras = function(self, updateInfo)
     I.UpdateStatusIcon(self)
 end
 
+-- Updates the health prediction calculator for a button (Midnight 12.0.0+)
+local function UnitButton_UpdateCalculator(self)
+    local unit = self.states.displayedUnit
+    if not unit then return end
+    local calc = self.widgets.healthCalculator
+    if not calc then return end
+    UnitGetDetailedHealPrediction(unit, "player", calc)
+end
+
 local function UnitButton_UpdateHealthStates(self, diff)
     local unit = self.states.displayedUnit
 
-    -- 12.0+: UnitHealth/UnitHealthMax may return secret values
-    -- Secret values CAN be passed to StatusBar:SetValue() for display
-    -- but CANNOT be used in arithmetic or comparisons
-    local health = UnitHealth(unit)
-    local healthMax = UnitHealthMax(unit)
+    if Cell.isMidnight and self.widgets.healthCalculator then
+        -- MIDNIGHT PATH: use calculator â€" no arithmetic on secrets
+        UnitButton_UpdateCalculator(self)
+        -- Store healthPercent for color logic.
+        -- GetCurrentHealthPercent() returns a secret value inside PvP instances —
+        -- Lua comparisons on secrets throw errors. Use it only when non-secret.
+        local hpPct = self.widgets.healthCalculator:GetCurrentHealthPercent()
+        if F.IsValueNonSecret(hpPct) then
+            self.states.healthPercent = hpPct
+        else
+            -- Secret: default to 0 so F.GetHealthBarColor won't trigger fullColor (which checks == 1).
+            -- class_color / class_color_dark modes don't use percent, so they still work.
+            self.states.healthPercent = 0
+        end
+        -- Death detection uses non-secret boolean
+        self.states.wasDead = self.states.isDead
+        self.states.isDead = UnitIsDeadOrGhost(unit) or false
+        -- Fallback: use UnitIsDeadOrGhost which is always non-secret
+        self.states.wasDeadOrGhost = self.states.isDeadOrGhost
+        self.states.isDeadOrGhost = UnitIsDeadOrGhost(unit) or false
 
-    if not issecretvalue(health) and not issecretvalue(healthMax) then
-        -- plain numbers, do full calculation
-        if diff then health = health + diff end
-        if healthMax == 0 then healthMax = 1 end
+        -- Health text: use calculator secret values
+        if enabledIndicators["healthText"] then
+            local calc = self.widgets.healthCalculator
+            local health = calc:GetCurrentHealth()
+            local maxHealth = calc:GetMaximumHealth()
+            local totalAbsorbs = calc:GetTotalDamageAbsorbs()
+            local healAbsorbs = calc:GetTotalHealAbsorbs()
+            -- SetValue accepts secret values
+            self.indicators.healthText:SetValue(health, maxHealth, totalAbsorbs, healAbsorbs)
+            self.indicators.healthText:Show()
+        else
+            self.indicators.healthText:Hide()
+        end
+
+        -- Fire death-state change callbacks
+        if self.states.wasDead ~= self.states.isDead then
+            UnitButton_UpdateStatusText(self)
+            I.UpdateStatusIcon_Resurrection(self)
+            if not self.states.isDead then
+                self.states.hasSoulstone = nil
+                I.UpdateStatusIcon(self)
+            end
+        end
+        if self.states.wasDeadOrGhost ~= self.states.isDeadOrGhost then
+            I.UpdateStatusIcon_Resurrection(self)
+            UnitButton_UpdateHealthColor(self)
+        end
+    else
+        -- CLASSIC/PRE-MIDNIGHT PATH: original logic preserved
+        local health = UnitHealth(unit) + (diff or 0)
+        local healthMax = UnitHealthMax(unit)
         health = min(health, healthMax) --! diff
 
         self.states.health = health
         self.states.healthMax = healthMax
-        self.states.healthPercent = health / healthMax
-    else
-        -- secret values - store raw for SetValue, use UnitHealthPercent for %
-        self.states.health = health
-        self.states.healthMax = healthMax
-        if UnitHealthPercent and CurveConstants and CurveConstants.ScaleTo100 then
-            local okPct, pct = pcall(function()
-                return UnitHealthPercent(unit, true, CurveConstants.ScaleTo100) / 100
-            end)
-            self.states.healthPercent = (okPct and pct) or self.states.healthPercent or 1
+        self.states.totalAbsorbs = UnitGetTotalAbsorbs(unit)
+        self.states.healAbsorbs = UnitGetTotalHealAbsorbs(unit)
+
+        if healthMax == 0 then
+            self.states.healthPercent = 0
         else
-            local okPct, pct = pcall(function() return (UnitHealthPercent(unit) or 100) / 100 end)
-            self.states.healthPercent = (okPct and pct) or self.states.healthPercent or 1
+            self.states.healthPercent = health / healthMax
         end
-    end
 
-    -- absorbs - store raw values (may be secret)
-    self.states.totalAbsorbs = UnitGetTotalAbsorbs(unit) or 0
-    self.states.healAbsorbs = UnitGetTotalHealAbsorbs(unit) or 0
-
-    -- dead state checks
-    if not issecretvalue(health) then
         self.states.wasDead = self.states.isDead
-        self.states.isDead = (health == 0)
-    else
-        local okDead, isDead = pcall(function() return health == 0 end)
-        self.states.wasDead = self.states.isDead
-        self.states.isDead = okDead and isDead or false
-    end
-    if self.states.wasDead ~= self.states.isDead then
-        UnitButton_UpdateStatusText(self)
-        I.UpdateStatusIcon_Resurrection(self)
-        if not self.states.isDead then
-            self.states.hasSoulstone = nil
-            I.UpdateStatusIcon(self)
+        self.states.isDead = health == 0
+        if self.states.wasDead ~= self.states.isDead then
+            UnitButton_UpdateStatusText(self)
+            I.UpdateStatusIcon_Resurrection(self)
+            if not self.states.isDead then
+                self.states.hasSoulstone = nil
+                I.UpdateStatusIcon(self)
+            end
         end
-    end
 
-    self.states.wasDeadOrGhost = self.states.isDeadOrGhost
-    self.states.isDeadOrGhost = SafeBoolTest(UnitIsDeadOrGhost(unit))
-    if self.states.wasDeadOrGhost ~= self.states.isDeadOrGhost then
-        I.UpdateStatusIcon_Resurrection(self)
-        UnitButton_UpdateHealthColor(self)
-    end
+        self.states.wasDeadOrGhost = self.states.isDeadOrGhost
+        self.states.isDeadOrGhost = UnitIsDeadOrGhost(unit)
+        if self.states.wasDeadOrGhost ~= self.states.isDeadOrGhost then
+            I.UpdateStatusIcon_Resurrection(self)
+            UnitButton_UpdateHealthColor(self)
+        end
 
-    if enabledIndicators["healthText"] then -- and not self.states.isDeadOrGhost then
-        -- healthText:SetValue may need plain numbers; wrap in pcall
-        pcall(function()
+        if enabledIndicators["healthText"] then -- and not self.states.isDeadOrGhost then
             self.indicators.healthText:SetValue(health, healthMax, self.states.totalAbsorbs, self.states.healAbsorbs)
-        end)
-        self.indicators.healthText:Show()
-    else
-        self.indicators.healthText:Hide()
+            self.indicators.healthText:Show()
+        else
+            self.indicators.healthText:Hide()
+        end
     end
 end
 
@@ -1901,13 +1973,12 @@ local function UnitButton_UpdatePowerStates(self)
     local unit = self.states.displayedUnit
     if not unit then return end
 
-    -- 12.0+: UnitPower may return secret values; store raw for SetValue
     self.states.power = UnitPower(unit)
     self.states.powerMax = UnitPowerMax(unit)
-    -- validate for comparisons
-    pcall(function()
+    -- Midnight 12.0.0+: UnitPowerMax may return a secret number during restricted contexts
+    if not (Cell.isMidnight and F.IsAuraRestricted()) then
         if self.states.powerMax <= 0 then self.states.powerMax = 1 end
-    end)
+    end
 end
 
 -------------------------------------------------
@@ -2084,7 +2155,10 @@ local function CheckVehicleRoot(self, petUnit)
     local isRoot
     for i = 1, UnitVehicleSeatCount(playerUnit) do
         local controlType, occupantName, serverName, ejectable, canSwitchSeats = UnitVehicleSeatInfo(playerUnit, i)
-        if UnitName(playerUnit) == occupantName then
+        local pName = UnitName(playerUnit)
+        -- On Midnight 12.0.0+, UnitName() may return a secret string in instances
+        -- Comparing a secret string with == will error, so guard before comparing
+        if not (Cell.isMidnight and F.IsSecretValue and F.IsSecretValue(pName)) and pName == occupantName then
             isRoot = controlType == "Root"
             break
         end
@@ -2106,7 +2180,8 @@ UnitButton_UpdateRole = function(self)
         roleIcon:SetRole(role)
 
         --! check vehicle root
-        if self.states.guid and strfind(self.states.guid, "^Vehicle") and not SafeBoolTest(UnitInPartyIsAI(unit)) then
+        -- Midnight 12.0.0+: guid may be secret for NPC/boss units
+        if self.states.guid and not (issecretvalue and issecretvalue(self.states.guid)) and strfind(self.states.guid, "^Vehicle") and not SafeBoolTest(UnitInPartyIsAI(unit)) then
             CheckVehicleRoot(self, unit)
         end
     else
@@ -2211,6 +2286,9 @@ UnitButton_UpdatePowerText = function(self)
     if not self._shouldShowPowerText then return end
 
     if self.states.powerMax and self.states.power and not self.states.isDeadOrGhost then
+        -- On Midnight, power and powerMax may be secret values (Midnight 12.0.0+)
+        -- SetValue uses string.format/AbbreviateNumbers which accept secrets â†’ FontString:SetText accepts secrets
+        -- Secret handling is in the powerText indicator's SetValue method (Indicators/Base.lua) â€” Phase 8 follow-up
         self.indicators.powerText:SetValue(self.states.power, self.states.powerMax)
     else
         self.indicators.powerText:Hide()
@@ -2233,19 +2311,29 @@ UnitButton_UpdatePowerTextColor = function(self)
 end
 
 UnitButton_UpdatePowerMax = function(self)
-    if not self._shouldShowPowerBar then return end
+    if not (self._shouldShowPowerBar and self.states.powerMax) then return end
 
-    -- Always use SetMinMaxValues (not Smoothed) to avoid Clamp on secret values
-    pcall(function()
+    -- powerMax may be secret on Midnight 12.0.0+ for some units.
+    -- SetMinMaxSmoothedValue is a Lua mixin that does arithmetic (Clamp) â€" fails on secrets.
+    -- SetMinMaxValues is native C API that accepts secrets. Use it as fallback on Midnight.
+    if barAnimationType == "Smooth" and F.IsValueNonSecret(self.states.powerMax) then
+        self.widgets.powerBar:SetMinMaxSmoothedValue(0, self.states.powerMax)
+    else
         self.widgets.powerBar:SetMinMaxValues(0, self.states.powerMax)
-    end)
+    end
 end
 
 UnitButton_UpdatePower = function(self)
-    if not self._shouldShowPowerBar then return end
+    if not (self._shouldShowPowerBar and self.states.power) then return end
 
-    -- Use raw SetValue to avoid Clamp in smooth animation
-    pcall(function() self.widgets.powerBar:SetValue(self.states.power) end)
+    -- self.states.power may be a secret value on Midnight 12.0.0+
+    -- SetBarValue maps to SetSmoothedValue in Smooth mode, which does Lua Clamp and fails on secrets.
+    -- Use native SetValue on Midnight when power is secret.
+    if Cell.isMidnight and not F.IsValueNonSecret(self.states.power) then
+        self.widgets.powerBar:SetValue(self.states.power)
+    else
+        self.widgets.powerBar:SetBarValue(self.states.power)
+    end
 end
 
 UnitButton_UpdatePowerType = function(self)
@@ -2274,10 +2362,33 @@ local function UnitButton_UpdateHealthMax(self)
 
     UnitButton_UpdateHealthStates(self)
 
-    -- Always use SetMinMaxValues (not Smoothed) to avoid Clamp on secret values
-    pcall(function()
-        self.widgets.healthBar:SetMinMaxValues(0, self.states.healthMax)
-    end)
+    if Cell.isMidnight and self.widgets.healthCalculator then
+        -- MIDNIGHT PATH: pass secret maxHealth directly
+        -- SetMinMaxSmoothedValue is a Lua mixin that does arithmetic (Clamp) â€” fails on secrets.
+        -- Always use native SetMinMaxValues on Midnight since maxHealth may be secret.
+        local maxHealth = self.widgets.healthCalculator:GetMaximumHealth()
+        self.widgets.healthBar:SetMinMaxValues(0, maxHealth)
+        -- Also update overlay bar ranges
+        if self.widgets.incomingHeal then
+            self.widgets.incomingHeal:SetMinMaxValues(0, maxHealth)
+        end
+        if self.widgets.shieldBar then
+            self.widgets.shieldBar:SetMinMaxValues(0, maxHealth)
+        end
+        if self.widgets.shieldBarR then
+            self.widgets.shieldBarR:SetMinMaxValues(0, maxHealth)
+        end
+        if self.widgets.absorbsBar then
+            self.widgets.absorbsBar:SetMinMaxValues(0, maxHealth)
+        end
+    else
+        -- CLASSIC/PRE-MIDNIGHT PATH: original logic
+        if barAnimationType == "Smooth" then
+            self.widgets.healthBar:SetMinMaxSmoothedValue(0, self.states.healthMax)
+        else
+            self.widgets.healthBar:SetMinMaxValues(0, self.states.healthMax)
+        end
+    end
 
     if Cell.vars.useThresholdColor or Cell.vars.useFullColor then
         UnitButton_UpdateHealthColor(self)
@@ -2292,47 +2403,114 @@ local function UnitButton_UpdateHealth(self, diff, skipStateUpdates)
         UnitButton_UpdateHealthStates(self, diff)
     end
 
-    local healthPercent = self.states.healthPercent
+    if Cell.isMidnight and self.widgets.healthCalculator then
+        -- MIDNIGHT PATH: pass secret values directly to status bar
+        local calc = self.widgets.healthCalculator
+        local health = calc:GetCurrentHealth()
+        -- Always use native SetValue on Midnight — SetSmoothedValue (SetBarValue in Smooth mode)
+        -- is a Lua mixin that does Clamp() arithmetic, which fails on secret values.
+        self.widgets.healthBar:SetValue(health)
+        if barAnimationType == "Flash" then
+            -- Flash: we can't compute exact diff without arithmetic on secrets, so skip precise flash
+            B.HideFlash(self)
+        end
 
-    -- Use C-level smooth interpolation (handles secret values, unlike Lua Clamp)
-    pcall(function() SetBarValueSmooth(self.widgets.healthBar, self.states.health) end)
+        if Cell.vars.useThresholdColor or Cell.vars.useFullColor then
+            UnitButton_UpdateHealthColor(self)
+        end
 
-    if barAnimationType == "Flash" then
-        local okDiff, pctDiff = pcall(function()
-            return healthPercent - (self.states.healthPercentOld or healthPercent)
-        end)
-        if okDiff then
-            local okMaxChk, maxIsZero = pcall(function() return self.states.healthMax == 0 end)
-            if pctDiff >= 0 or (okMaxChk and maxIsZero) then
-                B.HideFlash(self)
-            elseif pctDiff <= -0.05 and pctDiff >= -1 then
-                B.ShowFlash(self, abs(pctDiff))
+        -- Health thresholds: use EvaluateCurrentHealthPercent with a curve
+        if enabledIndicators["healthThresholds"] and self.widgets.healthCalculator then
+            self.indicators.healthThresholds:CheckThresholdMidnight(self.widgets.healthCalculator)
+        else
+            self.indicators.healthThresholds:Hide()
+        end
+
+        -- CELL_FADE_OUT_HEALTH_PERCENT: use EvaluateMissingHealthPercent with a Curve to fade
+        -- frames that are above the health threshold (healthy enough to fade out)
+        if CELL_FADE_OUT_HEALTH_PERCENT and self.widgets.healthCalculator then
+            RebuildFadeOutHealthCurve()
+            if fadeOutHealthCurve and self.states.inRange then
+                -- EvaluateCurrentHealthPercent feeds secret health% into the curve
+                -- Curve output: 1.0 if below threshold (needs healing), outOfRangeAlpha if above
+                local targetAlpha = self.widgets.healthCalculator:EvaluateCurrentHealthPercent(fadeOutHealthCurve)
+                -- targetAlpha is a secret value â€” SetAlpha accepts secrets on Midnight
+                self:SetAlpha(targetAlpha)
             end
         end
-    end
-
-    if Cell.vars.useThresholdColor or Cell.vars.useFullColor then
-        UnitButton_UpdateHealthColor(self)
-    end
-
-    self.states.healthPercentOld = healthPercent
-
-    if enabledIndicators["healthThresholds"] then
-        self.indicators.healthThresholds:CheckThreshold(healthPercent)
     else
-        self.indicators.healthThresholds:Hide()
-    end
+        -- CLASSIC/PRE-MIDNIGHT PATH: original logic
+        local healthPercent = self.states.healthPercent
 
-    if CELL_FADE_OUT_HEALTH_PERCENT then
-        if self.states.inRange and healthPercent < CELL_FADE_OUT_HEALTH_PERCENT then
-            A.FrameFadeIn(self, 0.25, self:GetAlpha(), 1)
+        if barAnimationType == "Flash" then
+            self.widgets.healthBar:SetValue(self.states.health)
+            local diff = healthPercent - (self.states.healthPercentOld or healthPercent)
+            if diff >= 0 or self.states.healthMax == 0 then
+                B.HideFlash(self)
+            elseif diff <= -0.05 and diff >= -1 then --! player (just joined) UnitHealthMax(unit) may be 1 ====> diff == -maxHealth
+                B.ShowFlash(self, abs(diff))
+            end
         else
-            A.FrameFadeOut(self, 0.25, self:GetAlpha(), CellDB["appearance"]["outOfRangeAlpha"])
+            self.widgets.healthBar:SetBarValue(self.states.health)
+        end
+
+        if Cell.vars.useThresholdColor or Cell.vars.useFullColor then
+            UnitButton_UpdateHealthColor(self)
+        end
+
+        self.states.healthPercentOld = healthPercent
+
+        if enabledIndicators["healthThresholds"] then
+            self.indicators.healthThresholds:CheckThreshold(healthPercent)
+        else
+            self.indicators.healthThresholds:Hide()
+        end
+
+        if CELL_FADE_OUT_HEALTH_PERCENT then
+            if self.states.inRange and healthPercent < CELL_FADE_OUT_HEALTH_PERCENT then
+                A.FrameFadeIn(self, 0.25, self:GetAlpha(), 1)
+            else
+                A.FrameFadeOut(self, 0.25, self:GetAlpha(), CellDB["appearance"]["outOfRangeAlpha"])
+            end
         end
     end
 end
 
 local function UnitButton_UpdateHealPrediction(self, skipStateUpdates)
+    if Cell.isMidnight and self.widgets.healPredictionCalculator then
+        -- MIDNIGHT PATH: use a DEDICATED calculator for heal prediction.
+        -- This keeps clamp/overflow settings isolated from the shared
+        -- healthCalculator used by health, absorb, and heal-absorb reads.
+        -- Bar is anchored to health fill edge (set in SetOrientation).
+        -- SetMinMaxValues(0, maxHealth) + SetValue(incomingHeals) lets the
+        -- C++ widget compute the proportional fill natively with secrets.
+        if not predictionEnabled then
+            self.widgets.incomingHeal:Hide()
+            return
+        end
+        local unit = self.states.displayedUnit
+        if not unit then return end
+        local calc = self.widgets.healPredictionCalculator
+        -- Configure clamp: 0 = MissingHealth (no overheal past frame edge)
+        calc:SetIncomingHealClampMode(0)
+        calc:SetIncomingHealOverflowPercent(1.0)
+        -- Populate calculator with fresh data
+        UnitGetDetailedHealPrediction(unit, "player", calc)
+        local maxHealth = calc:GetMaximumHealth()
+        local incomingHeals = calc:GetIncomingHeals()
+        local bar = self.widgets.incomingHeal
+        -- Set explicit size: bar fills from health edge across remaining bar space
+        if self.orientation == "horizontal" then
+            bar:SetWidth(self.widgets.healthBar:GetWidth())
+        else
+            bar:SetHeight(self.widgets.healthBar:GetHeight())
+        end
+        bar:SetMinMaxValues(0, maxHealth)
+        bar:SetValue(incomingHeals)
+        bar:Show()
+        return
+    end
+    -- CLASSIC/PRE-MIDNIGHT PATH: original logic
     if not predictionEnabled then
         self.widgets.incomingHeal:Hide()
         return
@@ -2341,42 +2519,77 @@ local function UnitButton_UpdateHealPrediction(self, skipStateUpdates)
     local unit = self.states.displayedUnit
     if not unit then return end
 
+    local value = UnitGetIncomingHeals(unit) or 0
+    if value == 0 then
+        self.widgets.incomingHeal:Hide()
+        return
+    end
+
     if not skipStateUpdates then
         UnitButton_UpdateHealthStates(self)
     end
 
-    local incomingHeal = self.widgets.incomingHeal
-    -- Set size to match health bar for correct proportions
-    if self.orientation == "horizontal" then
-        incomingHeal:SetWidth(self.widgets.healthBar:GetWidth())
-    else
-        incomingHeal:SetHeight(self.widgets.healthBar:GetHeight())
-    end
-
-    -- Use 12.0 calculator API if available (handles secret values via C)
-    local calc = self._healPredCalc
-    if calc and UnitGetDetailedHealPrediction then
-        pcall(function() UnitGetDetailedHealPrediction(unit, nil, calc) end)
-        local allHeal
-        if calc.GetIncomingHeals then
-            allHeal = select(1, calc:GetIncomingHeals())
-        end
-        pcall(function()
-            incomingHeal:SetMinMaxValues(0, self.states.healthMax)
-            SetBarValueSmooth(incomingHeal, allHeal or 0)
-        end)
-    else
-        -- Fallback for pre-12.0
-        local value = UnitGetIncomingHeals(unit) or 0
-        pcall(function()
-            incomingHeal:SetMinMaxValues(0, self.states.healthMax)
-            SetBarValueSmooth(incomingHeal, value)
-        end)
-    end
-    incomingHeal:Show()
+    self.widgets.incomingHeal:SetValue(value / self.states.healthMax, self.states.healthPercent)
 end
 
 UnitButton_UpdateShieldAbsorbs = function(self, skipStateUpdates)
+    if Cell.isMidnight and self.widgets.healthCalculator then
+        -- MIDNIGHT PATH: use calculator secret values
+        if not shieldEnabled then
+            self.widgets.shieldBar:Hide()
+            self.widgets.shieldBarR:Hide()
+            self.widgets.overShieldGlow:Hide()
+            self.widgets.overShieldGlowR:Hide()
+            self.indicators.shieldBar:Hide()
+            return
+        end
+        local unit = self.states.displayedUnit
+        if not unit then return end
+        -- Refresh calculator so we have current data (critical for standalone UNIT_ABSORB_AMOUNT_CHANGED events)
+        UnitButton_UpdateCalculator(self)
+        local absorbs = self.widgets.healthCalculator:GetDamageAbsorbs()
+        -- Update the shield widget bars
+        self.widgets.shieldBar:SetValue(absorbs)
+        self.widgets.shieldBar:Show()
+
+        -- Overshield glow and reverse-fill bar
+        -- NOTE: absorbs is a secret value on Midnight â€” we can't compare it to health to detect overshield.
+        -- Show the glow whenever shields are present and overshieldEnabled is on.
+        -- TODO: Use a Curve to map (absorbs + health - maxHealth) to glow visibility for precise overshield detection.
+        if overshieldReverseFillEnabled then
+            self.widgets.shieldBarR:SetValue(absorbs)
+            self.widgets.shieldBarR:Show()
+            if overshieldEnabled then
+                self.widgets.overShieldGlowR:Show()
+            else
+                self.widgets.overShieldGlowR:Hide()
+            end
+            self.widgets.overShieldGlow:Hide()
+        else
+            if overshieldEnabled then
+                self.widgets.overShieldGlow:Show()
+            else
+                self.widgets.overShieldGlow:Hide()
+            end
+            self.widgets.shieldBarR:Hide()
+            self.widgets.overShieldGlowR:Hide()
+        end
+
+        -- Update shield indicator (user-configurable indicator on top of health bar)
+        if enabledIndicators["shieldBar"] then
+            -- On Midnight, we pass the secret absorb value directly; the indicator's SetValue
+            -- accepts secrets since it's backed by a StatusBar on Midnight.
+            -- NOTE: indicatorBooleans["shieldBar"] (onlyShowOvershields) can't be honored with
+            -- secrets since we can't compute overshieldPercent. Show full absorbs instead.
+            self.indicators.shieldBar:Show()
+            self.indicators.shieldBar:SetValue(absorbs)
+        else
+            self.indicators.shieldBar:Hide()
+        end
+        return
+    end
+
+    -- CLASSIC/PRE-MIDNIGHT PATH: original logic
     local unit = self.states.displayedUnit
     if not unit then return end
 
@@ -2384,82 +2597,56 @@ UnitButton_UpdateShieldAbsorbs = function(self, skipStateUpdates)
         UnitButton_UpdateHealthStates(self)
     end
 
-    local shieldBar = self.widgets.shieldBar
-    -- Set size to match health bar for correct proportions
-    if self.orientation == "horizontal" then
-        shieldBar:SetWidth(self.widgets.healthBar:GetWidth())
-    else
-        shieldBar:SetHeight(self.widgets.healthBar:GetHeight())
-    end
+    if self.states.totalAbsorbs > 0 then
+        local shieldPercent = self.states.totalAbsorbs / self.states.healthMax
 
-    -- Use 12.0 calculator API if available (handles secret values via C)
-    local calc = self._healPredCalc
-    local absorbAmt, isClamped
-    if calc and UnitGetDetailedHealPrediction then
-        pcall(function() UnitGetDetailedHealPrediction(unit, nil, calc) end)
-        if calc.GetDamageAbsorbs then
-            absorbAmt, isClamped = calc:GetDamageAbsorbs()
-        end
-    end
-    -- Use calculator value or fall back to raw API
-    local displayAbsorbs = absorbAmt or self.states.totalAbsorbs or 0
-
-    pcall(function()
-        shieldBar:SetMinMaxValues(0, self.states.healthMax)
-        SetBarValueSmooth(shieldBar, displayAbsorbs)
-    end)
-    shieldBar:Show()
-
-    -- Overshield glow: use SetAlphaFromBoolean for secret bool support
-    if overshieldEnabled and isClamped ~= nil then
-        local glow = self.widgets.overShieldGlow
-        if glow.SetAlphaFromBoolean then
-            glow:Show()
-            glow:SetAlphaFromBoolean(isClamped, 1, 0)
-        else
-            -- fallback: try comparison
-            local okOver, isOver = pcall(function()
-                return isClamped == true
-            end)
-            if okOver and isOver then glow:Show() else glow:Hide() end
-        end
-    else
-        self.widgets.overShieldGlow:Hide()
-    end
-    self.widgets.shieldBarR:Hide()
-    self.widgets.overShieldGlowR:Hide()
-
-    -- Indicator (percentage-based, gracefully degrades with secrets)
-    if enabledIndicators["shieldBar"] then
-        local okPct, pct = pcall(function()
-            local ta = (displayAbsorbs or 0) + 0
-            if ta <= 0 then return nil end
-            return ta / (self.states.healthMax + 0)
-        end)
-        if okPct and pct then
+        if enabledIndicators["shieldBar"] then
             if indicatorBooleans["shieldBar"] then
-                local okO, osp = pcall(function()
-                    return ((displayAbsorbs + 0) + (self.states.health + 0) - (self.states.healthMax + 0)) / (self.states.healthMax + 0)
-                end)
-                if okO and osp and osp > 0 then
+                -- onlyShowOvershields
+                local overshieldPercent = (self.states.totalAbsorbs + self.states.health - self.states.healthMax) / self.states.healthMax
+                if overshieldPercent > 0 then
                     self.indicators.shieldBar:Show()
-                    self.indicators.shieldBar:SetValue(osp)
+                    self.indicators.shieldBar:SetValue(overshieldPercent)
                 else
                     self.indicators.shieldBar:Hide()
                 end
             else
                 self.indicators.shieldBar:Show()
-                self.indicators.shieldBar:SetValue(pct)
+                self.indicators.shieldBar:SetValue(shieldPercent)
             end
         else
             self.indicators.shieldBar:Hide()
         end
+
+        self.widgets.shieldBar:SetValue(shieldPercent, self.states.healthPercent)
     else
         self.indicators.shieldBar:Hide()
+        self.widgets.shieldBar:Hide()
+        self.widgets.overShieldGlow:Hide()
+        self.widgets.shieldBarR:Hide()
+        self.widgets.overShieldGlowR:Hide()
     end
 end
 
 local function UnitButton_UpdateHealAbsorbs(self, skipStateUpdates)
+    if Cell.isMidnight and self.widgets.healthCalculator then
+        -- MIDNIGHT PATH: use calculator secret values
+        if not absorbEnabled then
+            self.widgets.absorbsBar:Hide()
+            self.widgets.overAbsorbGlow:Hide()
+            return
+        end
+        local unit = self.states.displayedUnit
+        if not unit then return end
+        -- Refresh calculator so we have current data (critical for standalone UNIT_HEAL_ABSORB_AMOUNT_CHANGED events)
+        UnitButton_UpdateCalculator(self)
+        local healAbsorbs = self.widgets.healthCalculator:GetHealAbsorbs()
+        self.widgets.absorbsBar:SetValue(healAbsorbs)
+        self.widgets.absorbsBar:Show()
+        return
+    end
+
+    -- CLASSIC/PRE-MIDNIGHT PATH: original logic
     if not absorbEnabled then
         self.widgets.absorbsBar:Hide()
         self.widgets.overAbsorbGlow:Hide()
@@ -2473,50 +2660,12 @@ local function UnitButton_UpdateHealAbsorbs(self, skipStateUpdates)
         UnitButton_UpdateHealthStates(self)
     end
 
-    local absorbsBar = self.widgets.absorbsBar
-    if absorbInvertColor then
-        local r, g, b = F.InvertColor(self.widgets.healthBar:GetStatusBarColor())
-        absorbsBar:SetStatusBarColor(r, g, b)
-        absorbsBar.overAbsorbGlow:SetVertexColor(r, g, b)
-    end
-
-    -- Use calculator API for heal absorbs
-    local calc = self._healPredCalc
-    local healAbsorbAmt, isClamped
-    if calc and UnitGetDetailedHealPrediction then
-        pcall(function() UnitGetDetailedHealPrediction(unit, nil, calc) end)
-        if calc.GetHealAbsorbs then
-            healAbsorbAmt, isClamped = calc:GetHealAbsorbs()
-        end
-    end
-
-    local displayAbsorbs = healAbsorbAmt or self.states.healAbsorbs or 0
-    pcall(function()
-        absorbsBar:SetMinMaxValues(0, self.states.health)
-        SetBarValueSmooth(absorbsBar, displayAbsorbs)
-    end)
-    absorbsBar:Show()
-
-    -- Over-absorb glow using SetAlphaFromBoolean for secret bool support
-    local glow = self.widgets.overAbsorbGlow
-    if isClamped ~= nil then
-        if SetAlphaFromBoolean then
-            glow:Show()
-            SetAlphaFromBoolean(glow, isClamped, 1, 0)
-        else
-            local okOver, isOver = pcall(function() return isClamped == true end)
-            if okOver and isOver then glow:Show() else glow:Hide() end
-        end
+    if self.states.healAbsorbs > 0 then
+        local absorbsPercent = self.states.healAbsorbs / self.states.healthMax
+        self.widgets.absorbsBar:SetValue(absorbsPercent, self.states.healthPercent)
     else
-        -- Fallback: try comparison with pcall
-        local okGlow, showGlow = pcall(function()
-            return displayAbsorbs and displayAbsorbs > self.states.health
-        end)
-        if okGlow and showGlow then
-            glow:Show()
-        else
-            glow:Hide()
-        end
+        self.widgets.absorbsBar:Hide()
+        self.widgets.overAbsorbGlow:Hide()
     end
 end
 
@@ -2578,13 +2727,25 @@ local function UnitButton_UpdateInRange(self, ir)
     if not unit then return end
 
     local inRange = IsInRange(unit)
+    -- Nil-safety: if IsInRange errors (e.g. secret value issue), default to true
+    -- so frames don't grey out incorrectly
+    if inRange == nil then inRange = true end
 
     self.states.inRange = inRange
     if Cell.loaded then
         if self.states.inRange ~= self.states.wasInRange then
             if inRange then
                 if CELL_FADE_OUT_HEALTH_PERCENT then
-                    if not self.states.healthPercent or self.states.healthPercent < CELL_FADE_OUT_HEALTH_PERCENT then
+                    if Cell.isMidnight and self.widgets and self.widgets.healthCalculator then
+                        -- Midnight: use Curve-based fade (secret-safe)
+                        RebuildFadeOutHealthCurve()
+                        if fadeOutHealthCurve then
+                            local targetAlpha = self.widgets.healthCalculator:EvaluateCurrentHealthPercent(fadeOutHealthCurve)
+                            self:SetAlpha(targetAlpha)
+                        else
+                            A.FrameFadeIn(self, 0.25, self:GetAlpha(), 1)
+                        end
+                    elseif not self.states.healthPercent or self.states.healthPercent < CELL_FADE_OUT_HEALTH_PERCENT then
                         A.FrameFadeIn(self, 0.25, self:GetAlpha(), 1)
                     else
                         A.FrameFadeOut(self, 0.25, self:GetAlpha(), CellDB["appearance"]["outOfRangeAlpha"])
@@ -2638,15 +2799,15 @@ UnitButton_UpdateStatusText = function(self)
 
     if not SafeBoolTest(UnitIsConnected(unit)) and SafeBoolTest(UnitIsPlayer(unit)) then
         statusText:Show()
-        statusText:SetStatus("OFFLINE")
+        statusText:SetStatus(“OFFLINE”)
         statusText:ShowTimer()
     elseif SafeBoolTest(UnitIsAFK(unit)) then
         statusText:Show()
-        statusText:SetStatus("AFK")
+        statusText:SetStatus(“AFK”)
         statusText:ShowTimer()
     elseif SafeBoolTest(UnitIsFeignDeath(unit)) then
         statusText:Show()
-        statusText:SetStatus("FEIGN")
+        statusText:SetStatus(“FEIGN”)
         statusText:HideTimer(true)
     elseif SafeBoolTest(UnitIsDeadOrGhost(unit)) then
         statusText:Show()
@@ -2685,6 +2846,9 @@ local function UnitButton_UpdateName(self)
     local unit = self.states.unit
     if not unit then return end
 
+    -- unit name may be a secret string in instances on Midnight 12.0.0+
+    -- FontString:SetText() accepts secrets, so display works without change
+    -- However, any NAME COMPARISONS (name == something) will error if name is secret
     self.states.name = UnitName(unit)
     self.states.fullName = F.UnitFullName(unit)
     self.states.class = UnitClassBase(unit)
@@ -2721,6 +2885,11 @@ UnitButton_UpdateHealthColor = function(self)
     local unit = self.states.unit
     if not unit then return end
 
+    -- NOTE: Health bar coloring uses non-secret data (class, settings, UnitIsPlayer, etc.)
+    -- so the classic color logic below works on both Midnight and pre-Midnight.
+    -- TODO: implement proper ColorCurve coloring for threshold/gradient modes once
+    -- SetStatusBarColor secret color API is verified on PTR.
+
     self.states.class = UnitClassBase(unit) --! update class
 
     local barR, barG, barB
@@ -2753,58 +2922,35 @@ UnitButton_UpdateHealthColor = function(self)
     self.widgets.healthBar:SetStatusBarColor(barR, barG, barB, barA)
     self.widgets.healthBarLoss:SetVertexColor(lossR, lossG, lossB, lossA)
 
-    if Cell.loaded and CellDB["appearance"]["healPrediction"][2] then
-        self.widgets.incomingHeal:SetStatusBarColor(CellDB["appearance"]["healPrediction"][3][1], CellDB["appearance"]["healPrediction"][3][2], CellDB["appearance"]["healPrediction"][3][3], CellDB["appearance"]["healPrediction"][3][4])
+    if Cell.isMidnight then
+        -- StatusBar on Midnight: use SetStatusBarColor
+        if Cell.loaded and CellDB["appearance"]["healPrediction"][2] then
+            self.widgets.incomingHeal:SetStatusBarColor(CellDB["appearance"]["healPrediction"][3][1], CellDB["appearance"]["healPrediction"][3][2], CellDB["appearance"]["healPrediction"][3][3], CellDB["appearance"]["healPrediction"][3][4])
+        else
+            self.widgets.incomingHeal:SetStatusBarColor(barR, barG, barB, 0.4)
+        end
     else
-        self.widgets.incomingHeal:SetStatusBarColor(barR, barG, barB, 0.4)
+        -- Texture on pre-Midnight: use SetVertexColor
+        if Cell.loaded and CellDB["appearance"]["healPrediction"][2] then
+            self.widgets.incomingHeal:SetVertexColor(CellDB["appearance"]["healPrediction"][3][1], CellDB["appearance"]["healPrediction"][3][2], CellDB["appearance"]["healPrediction"][3][3], CellDB["appearance"]["healPrediction"][3][4])
+        else
+            self.widgets.incomingHeal:SetVertexColor(barR, barG, barB, 0.4)
+        end
     end
 end
 
--------------------------------------------------
--- cleu health updater
--------------------------------------------------
-local cleuHealthUpdater = CreateFrame("Frame", "CellCleuHealthUpdater")
-cleuHealthUpdater:SetScript("OnEvent", function()
-    if not CombatLogGetCurrentEventInfo then return end
-    local ok, _, subEvent, _, sourceGUID, sourceName, sourceFlags, sourceRaidFlags, destGUID, destName, destFlags, destRaidFlags, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19, arg20, arg21, arg22 = pcall(CombatLogGetCurrentEventInfo)
-    if not ok then return end
-
-    if not F.IsFriend(destFlags) then return end
-
-    local diff
-    if subEvent == "SPELL_HEAL" or subEvent == "SPELL_PERIODIC_HEAL" then
-        -- spellId, spellName, spellSchool, amount, overhealing, absorbed, critical
-        diff = arg15
-    elseif subEvent == "SPELL_DAMAGE" or subEvent == "SPELL_PERIODIC_DAMAGE" then
-        -- spellId, spellName, spellSchool, amount, overhealing, absorbed, critical
-        diff = -arg15
-    elseif subEvent == "SWING_DAMAGE" then
-        -- amount
-        diff = -arg12
-    elseif subEvent == "RANGE_DAMAGE" then
-        -- spellId, spellName, spellSchool, amount
-        diff = -arg15
-    elseif subEvent == "ENVIRONMENTAL_DAMAGE" then
-        -- environmentalType, amount
-        diff = -arg13
-    end
-
-    if diff and diff ~= 0 then
-        F.HandleUnitButton("guid", destGUID, UnitButton_UpdateHealth, diff)
-    end
-end)
-
-local function UpdateCLEU()
-    -- CLEU (CombatLogGetCurrentEventInfo) removed in 12.0+
-    if not CombatLogGetCurrentEventInfo then return end
-
-    if CellDB["general"]["useCleuHealthUpdater"] then
-        cleuHealthUpdater:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-    else
-        cleuHealthUpdater:UnregisterAllEvents()
-    end
+-- Configures the health color curve for a button (Midnight 12.0.0+)
+-- Called when color settings change (e.g., class color, custom color toggled)
+function B.UpdateHealthColorCurve(button)
+    if not (Cell.isMidnight and button.widgets.healthColorCurve) then return end
+    local curve = button.widgets.healthColorCurve
+    curve:ClearPoints()
+    -- Default green gradient; overridden by class color / custom color settings
+    -- TODO: read from CellDB["appearance"] color settings and build proper curve
+    curve:AddPoint(0.0, {r=1,   g=0,   b=0,   a=1}) -- red at 0%
+    curve:AddPoint(0.5, {r=1,   g=1,   b=0,   a=1}) -- yellow at 50%
+    curve:AddPoint(1.0, {r=0,   g=0.9, b=0,   a=1}) -- green at 100%
 end
-Cell.RegisterCallback("UpdateCLEU", "UnitButton_UpdateCLEU", UpdateCLEU)
 
 -------------------------------------------------
 -- translit names
@@ -2946,7 +3092,7 @@ local function UnitButton_RegisterEvents(self)
     -- self:RegisterEvent("UNIT_PET")
     self:RegisterEvent("UNIT_PORTRAIT_UPDATE") -- pet summoned far away
 
-    --! OnShow时立即执行，但UpdateIndicators可能并未执行完毕，导致在ResetCustomIndicators过程中指示器发生变化，进而报错
+    --! OnShowæ—¶ç«‹å³æ‰§è¡Œï¼Œä½†UpdateIndicatorså¯èƒ½å¹¶æœªæ‰§è¡Œå®Œæ¯•ï¼Œå¯¼è‡´åœ¨ResetCustomIndicatorsè¿‡ç¨‹ä¸­æŒ‡ç¤ºå™¨å‘ç”Ÿå˜åŒ–ï¼Œè¿›è€ŒæŠ¥é”™
     local success, result = pcall(UnitButton_UpdateAll, self)
     if not success then
         F.Debug("UnitButton_UpdateAll |cffff0000FAILED:|r", self:GetName(), result)
@@ -3116,6 +3262,10 @@ local function UnitButton_OnAttributeChanged(self, name, value)
                 self.__unitName = nil
             end
             wipe(self.states)
+            -- Reset calculator predicted values to prevent stale data from previous unit
+            if self.widgets and self.widgets.healthCalculator then
+                self.widgets.healthCalculator:ResetPredictedValues()
+            end
         end
 
         -- private auras
@@ -3200,6 +3350,10 @@ local function UnitButton_OnHide(self)
     self.__displayedGuid = nil
     self._updateRequired = nil
     F.RemoveElementsExceptKeys(self.states, "unit", "displayedUnit")
+    -- Reset calculator predicted values so hidden button doesn't hold stale data
+    if self.widgets and self.widgets.healthCalculator then
+        self.widgets.healthCalculator:ResetPredictedValues()
+    end
 end
 
 local function UnitButton_OnEnter(self)
@@ -3244,7 +3398,13 @@ local function UnitButton_OnTick(self)
                 -- NOTE: unit entity changed
                 -- update Cell.vars.guids
                 self.__unitGuid = guid
-                if not self.isSpotlight then Cell.vars.guids[guid] = self.states.unit end
+                -- On Midnight 12.0.0+, GUIDs for non-player units in instances are secret
+                -- Can't use a secret as a table key â€” only store non-secret GUIDs
+                if not self.isSpotlight then
+                    if not (Cell.isMidnight and F.IsSecretValue and F.IsSecretValue(guid)) then
+                        Cell.vars.guids[guid] = self.states.unit
+                    end
+                end
 
                 -- NOTE: only save players' names
                 if SafeBoolTest(UnitIsPlayer(self.states.unit)) then
@@ -3256,7 +3416,7 @@ local function UnitButton_OnTick(self)
                         self.__nameRetries = nil
                     else
                         -- NOTE: update on next tick
-                        -- 国服可以起名为“未知目标”，干！就只多重试4次好了
+                        -- å›½æœå¯ä»¥èµ·åä¸ºâ€œæœªçŸ¥ç›®æ ‡â€ï¼Œå¹²ï¼å°±åªå¤šé‡è¯•4æ¬¡å¥½äº†
                         self.__nameRetries = (self.__nameRetries or 0) + 1
                         self.__unitGuid = nil
                     end
@@ -3322,13 +3482,25 @@ function B.UpdateShields(button)
     absorbEnabled = CellDB["appearance"]["healAbsorb"][1]
     absorbInvertColor = CellDB["appearance"]["healAbsorbInvertColor"]
 
-    button.widgets.shieldBar:SetStatusBarColor(unpack(CellDB["appearance"]["shield"][2]))
-    button.widgets.shieldBarR:SetVertexColor(unpack(CellDB["appearance"]["shield"][2]))
+    if Cell.isMidnight then
+        -- StatusBars on Midnight: use SetStatusBarColor
+        button.widgets.shieldBar:SetStatusBarColor(unpack(CellDB["appearance"]["shield"][2]))
+        button.widgets.shieldBarR:SetStatusBarColor(unpack(CellDB["appearance"]["shield"][2]))
+    else
+        -- Textures on pre-Midnight: use SetVertexColor
+        button.widgets.shieldBar:SetVertexColor(unpack(CellDB["appearance"]["shield"][2]))
+        button.widgets.shieldBarR:SetVertexColor(unpack(CellDB["appearance"]["shield"][2]))
+    end
+    -- overShieldGlow textures are always textures
     button.widgets.overShieldGlow:SetVertexColor(unpack(CellDB["appearance"]["overshield"][2]))
     button.widgets.overShieldGlowR:SetVertexColor(unpack(CellDB["appearance"]["overshield"][2]))
     if not absorbInvertColor then
         button.widgets.overAbsorbGlow:SetVertexColor(unpack(CellDB["appearance"]["healAbsorb"][2]))
-        button.widgets.absorbsBar:SetStatusBarColor(unpack(CellDB["appearance"]["healAbsorb"][2]))
+        if Cell.isMidnight then
+            button.widgets.absorbsBar:SetStatusBarColor(unpack(CellDB["appearance"]["healAbsorb"][2]))
+        else
+            button.widgets.absorbsBar:SetVertexColor(unpack(CellDB["appearance"]["healAbsorb"][2]))
+        end
     end
 
     UnitButton_UpdateHealPrediction(button)
@@ -3343,7 +3515,11 @@ function B.SetTexture(button, tex)
     button.widgets.powerBar:SetStatusBarTexture(tex)
     button.widgets.powerBar:GetStatusBarTexture():SetDrawLayer("ARTWORK", -7) --! VERY IMPORTANT
     button.widgets.powerBarLoss:SetTexture(tex)
-    button.widgets.incomingHeal:SetStatusBarTexture(tex)
+    if Cell.isMidnight then
+        button.widgets.incomingHeal:SetStatusBarTexture(tex)
+    else
+        button.widgets.incomingHeal:SetTexture(tex)
+    end
     button.widgets.damageFlashTex:SetTexture(tex)
 end
 
@@ -3563,25 +3739,23 @@ function B.SetOrientation(button, orientation, rotateTexture)
     healthBar:SetRotatesTexture(rotateTexture)
     powerBar:SetRotatesTexture(rotateTexture)
 
-    -- StatusBar orientation for shield/absorb/heal bars (12.0 secret value support)
-    local barOrientation = (orientation == "vertical_health") and "vertical" or orientation
-    incomingHeal:SetOrientation(barOrientation)
-    incomingHeal:SetRotatesTexture(rotateTexture)
-    shieldBar:SetOrientation(barOrientation)
-    shieldBar:SetRotatesTexture(rotateTexture)
-    absorbsBar:SetOrientation(barOrientation)
-    absorbsBar:SetRotatesTexture(rotateTexture)
-
     button.indicators.healthThresholds:SetOrientation(orientation)
 
     if rotateTexture then
         F.RotateTexture(healthBarLoss, 90)
         F.RotateTexture(powerBarLoss, 90)
+        if not Cell.isMidnight then F.RotateTexture(incomingHeal, 90) end
         F.RotateTexture(damageFlashTex, 90)
+        -- F.RotateTexture(shieldBar, 90)
+        -- F.RotateTexture(absorbsBar, 90)
     else
         F.RotateTexture(healthBarLoss, 0)
         F.RotateTexture(powerBarLoss, 0)
+        if not Cell.isMidnight then F.RotateTexture(incomingHeal, 0) end
         F.RotateTexture(damageFlashTex, 0)
+        -- F.RotateTexture(overShieldGlow, 0)
+        -- F.RotateTexture(shieldBar, 0)
+        -- F.RotateTexture(absorbsBar, 0)
     end
 
     if orientation == "horizontal" then
@@ -3601,25 +3775,40 @@ function B.SetOrientation(button, orientation, rotateTexture)
         P.Point(gapTexture, "BOTTOMRIGHT", powerBar, "TOPRIGHT")
         P.Height(gapTexture, CELL_BORDER_SIZE)
 
-        -- update incomingHeal (StatusBar - anchored at health fill edge, extends right)
-        P.ClearPoints(incomingHeal)
-        P.Point(incomingHeal, "TOPLEFT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
-        P.Point(incomingHeal, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "BOTTOMRIGHT")
+        if Cell.isMidnight then
+            -- Midnight: anchor incomingHeal to health fill edge so it starts where health ends
+            P.ClearPoints(incomingHeal)
+            P.Point(incomingHeal, "TOPLEFT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
+            P.Point(incomingHeal, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "BOTTOMRIGHT")
+            incomingHeal:SetOrientation("horizontal")
+            shieldBar:SetOrientation("horizontal")
+            shieldBarR:SetOrientation("horizontal")
+            absorbsBar:SetOrientation("horizontal")
+        else
+            -- Pre-Midnight: Textures with manual positioning
+            -- update incomingHeal
+            incomingHeal.SetValue = IncomingHeal_SetValue_Horizontal
+            P.ClearPoints(incomingHeal)
+            P.Point(incomingHeal, "TOPLEFT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
+            P.Point(incomingHeal, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "BOTTOMRIGHT")
 
-        -- update shieldBar (StatusBar - anchored at health fill edge, extends right)
-        P.ClearPoints(shieldBar)
-        P.Point(shieldBar, "TOPLEFT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
-        P.Point(shieldBar, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "BOTTOMRIGHT")
+            -- update shieldBar
+            shieldBar.SetValue = ShieldBar_SetValue_Horizontal
+            P.ClearPoints(shieldBar)
+            P.Point(shieldBar, "TOPLEFT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
+            P.Point(shieldBar, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "BOTTOMRIGHT")
 
-        -- update shieldBarR
-        P.ClearPoints(shieldBarR)
-        P.Point(shieldBarR, "TOPRIGHT", healthBar:GetStatusBarTexture())
-        P.Point(shieldBarR, "BOTTOMRIGHT", healthBar:GetStatusBarTexture())
+            -- update shieldBarR
+            P.ClearPoints(shieldBarR)
+            P.Point(shieldBarR, "TOPRIGHT", healthBar:GetStatusBarTexture())
+            P.Point(shieldBarR, "BOTTOMRIGHT", healthBar:GetStatusBarTexture())
 
-        -- update absorbsBar (StatusBar - covers health fill area, reverse fill)
-        P.ClearPoints(absorbsBar)
-        P.Point(absorbsBar, "TOPLEFT", healthBar:GetStatusBarTexture(), "TOPLEFT")
-        P.Point(absorbsBar, "BOTTOMRIGHT", healthBar:GetStatusBarTexture(), "BOTTOMRIGHT")
+            -- update absorbsBar
+            absorbsBar.SetValue = AbsorbsBar_SetValue_Horizontal
+            P.ClearPoints(absorbsBar)
+            P.Point(absorbsBar, "TOPRIGHT", healthBar:GetStatusBarTexture())
+            P.Point(absorbsBar, "BOTTOMRIGHT", healthBar:GetStatusBarTexture())
+        end
 
         -- update overShieldGlow
         P.ClearPoints(overShieldGlow)
@@ -3677,25 +3866,40 @@ function B.SetOrientation(button, orientation, rotateTexture)
             P.Height(gapTexture, CELL_BORDER_SIZE)
         end
 
-        -- update incomingHeal (StatusBar - anchored at health fill edge, extends up)
-        P.ClearPoints(incomingHeal)
-        P.Point(incomingHeal, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "TOPLEFT")
-        P.Point(incomingHeal, "BOTTOMRIGHT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
+        if Cell.isMidnight then
+            -- Midnight: anchor incomingHeal to health fill edge so it starts where health ends
+            P.ClearPoints(incomingHeal)
+            P.Point(incomingHeal, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "TOPLEFT")
+            P.Point(incomingHeal, "BOTTOMRIGHT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
+            incomingHeal:SetOrientation("vertical")
+            shieldBar:SetOrientation("vertical")
+            shieldBarR:SetOrientation("vertical")
+            absorbsBar:SetOrientation("vertical")
+        else
+            -- Pre-Midnight: Textures with manual positioning
+            -- update incomingHeal
+            incomingHeal.SetValue = IncomingHeal_SetValue_Vertical
+            P.ClearPoints(incomingHeal)
+            P.Point(incomingHeal, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "TOPLEFT")
+            P.Point(incomingHeal, "BOTTOMRIGHT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
 
-        -- update shieldBar (StatusBar - anchored at health fill edge, extends up)
-        P.ClearPoints(shieldBar)
-        P.Point(shieldBar, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "TOPLEFT")
-        P.Point(shieldBar, "BOTTOMRIGHT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
+            -- update shieldBar
+            shieldBar.SetValue = ShieldBar_SetValue_Vertical
+            P.ClearPoints(shieldBar)
+            P.Point(shieldBar, "BOTTOMLEFT", healthBar:GetStatusBarTexture(), "TOPLEFT")
+            P.Point(shieldBar, "BOTTOMRIGHT", healthBar:GetStatusBarTexture(), "TOPRIGHT")
 
-        -- update shieldBarR
-        P.ClearPoints(shieldBarR)
-        P.Point(shieldBarR, "TOPLEFT", healthBar:GetStatusBarTexture())
-        P.Point(shieldBarR, "TOPRIGHT", healthBar:GetStatusBarTexture())
+            -- update shieldBarR
+            P.ClearPoints(shieldBarR)
+            P.Point(shieldBarR, "TOPLEFT", healthBar:GetStatusBarTexture())
+            P.Point(shieldBarR, "TOPRIGHT", healthBar:GetStatusBarTexture())
 
-        -- update absorbsBar (StatusBar - covers health fill area, reverse fill)
-        P.ClearPoints(absorbsBar)
-        P.Point(absorbsBar, "TOPLEFT", healthBar:GetStatusBarTexture(), "TOPLEFT")
-        P.Point(absorbsBar, "BOTTOMRIGHT", healthBar:GetStatusBarTexture(), "BOTTOMRIGHT")
+            -- update absorbsBar
+            absorbsBar.SetValue = AbsorbsBar_SetValue_Vertical
+            P.ClearPoints(absorbsBar)
+            P.Point(absorbsBar, "TOPLEFT", healthBar:GetStatusBarTexture())
+            P.Point(absorbsBar, "TOPRIGHT", healthBar:GetStatusBarTexture())
+        end
 
         -- update overShieldGlow
         P.ClearPoints(overShieldGlow)
@@ -3931,12 +4135,11 @@ local startTimeCache = {}
 -- Layers ---------------------------------------
 -- OVERLAY
 -- ARTWORK
---  -2 overAbsorbGlow (texture)
---  absorbsBar (StatusBar, frame level midLevel+2)
---  -4 overShieldGlow, overShieldGlowR (texture)
---  shieldBar (StatusBar, frame level midLevel+1), shieldBarR (texture)
---  incomingHeal (StatusBar, frame level healthBar+1)
---	-6 damageFlashTex
+--  -2 overAbsorbGlow
+--  -3 absorbsBar
+--  -4 overShieldGlow, overShieldGlowR
+--  -5 shieldBar, shieldBarR
+--	-6 incomingHeal, damageFlashTex
 --	-7 healthBar, healthBarLoss
 -- BORDER
 --  0 gapTexture
@@ -3952,6 +4155,18 @@ function CellUnitButton_OnLoad(button)
     button.widgets = {}
     button.states = {}
     button.indicators = {}
+
+    -- Health prediction calculator (Patch 12.0.0+)
+    if Cell.isMidnight and CreateUnitHealPredictionCalculator then
+        button.widgets.healthCalculator = CreateUnitHealPredictionCalculator()
+        -- Separate calculator for heal prediction so clamp settings don't
+        -- corrupt the shared healthCalculator used by health/absorb reads.
+        button.widgets.healPredictionCalculator = CreateUnitHealPredictionCalculator()
+    end
+    -- Color curve for health bar coloring (Patch 12.0.0+)
+    if Cell.isMidnight and C_CurveUtil then
+        button.widgets.healthColorCurve = C_CurveUtil.CreateColorCurve()
+    end
 
     InitAuraTables(button)
 
@@ -4026,33 +4241,26 @@ function CellUnitButton_OnLoad(button)
     -- P.Point(powerBarLoss, "BOTTOMLEFT", powerBar:GetStatusBarTexture(), "BOTTOMRIGHT")
     powerBarLoss:SetTexture(Cell.vars.texture)
 
-    -- 12.0+ heal prediction calculator (handles secret values via C)
-    if CreateUnitHealPredictionCalculator then
-        button._healPredCalc = CreateUnitHealPredictionCalculator()
-        -- Configure clamp modes: absorbs clamped to missing health, heals to missing health
-        if button._healPredCalc.SetDamageAbsorbClampMode then
-            button._healPredCalc:SetDamageAbsorbClampMode(
-                Enum.UnitDamageAbsorbClampMode and Enum.UnitDamageAbsorbClampMode.MissingHealth or 1)
-        end
-        if button._healPredCalc.SetHealAbsorbClampMode then
-            button._healPredCalc:SetHealAbsorbClampMode(
-                Enum.UnitHealAbsorbClampMode and Enum.UnitHealAbsorbClampMode.CurrentHealth or 0)
-        end
-        if button._healPredCalc.SetIncomingHealClampMode then
-            button._healPredCalc:SetIncomingHealClampMode(
-                Enum.UnitIncomingHealClampMode and Enum.UnitIncomingHealClampMode.MissingHealth or 1)
-        end
-        if button._healPredCalc.SetIncomingHealOverflowPercent then
-            button._healPredCalc:SetIncomingHealOverflowPercent(1.05)
-        end
+    -- incoming heal
+    local incomingHeal
+    if Cell.isMidnight then
+        -- Midnight: StatusBar so native SetMinMaxValues/SetValue work with secret values
+        -- Health values are always secret in instances, so we must use calculator-based StatusBar
+        incomingHeal = CreateFrame("StatusBar", name.."IncomingHealBar", healthBar)
+        incomingHeal:SetStatusBarTexture(Cell.vars.texture)
+        incomingHeal:GetStatusBarTexture():SetDrawLayer("ARTWORK", -6)
+        incomingHeal:SetFrameLevel(healthBar:GetFrameLevel()+1)
+        -- Positioned by SetOrientation (anchored to health fill edge, not SetAllPoints)
+        -- Compatibility shims: map Texture methods to StatusBar equivalents
+        incomingHeal.SetVertexColor = incomingHeal.SetStatusBarColor
+        incomingHeal.SetTexture = incomingHeal.SetStatusBarTexture
+    else
+        -- Pre-Midnight: Texture with manual width/height positioning
+        incomingHeal = healthBar:CreateTexture(name.."IncomingHealBar", "ARTWORK", nil, -3)
+        incomingHeal:SetTexture(Cell.vars.texture)
+        incomingHeal.SetValue = DumbFunc
     end
-
-    -- incoming heal (StatusBar for 12.0 secret value support)
-    local incomingHeal = CreateFrame("StatusBar", name.."IncomingHealBar", healthBar)
     button.widgets.incomingHeal = incomingHeal
-    incomingHeal:SetStatusBarTexture(Cell.vars.texture)
-    incomingHeal:SetFrameLevel(healthBar:GetFrameLevel() + 1)
-    incomingHeal:EnableMouse(false)
     incomingHeal:Hide()
 
     --* indicatorFrame
@@ -4091,24 +4299,49 @@ function CellUnitButton_OnLoad(button)
     midLevelFrame:SetFrameLevel(button:GetFrameLevel()+120)
     midLevelFrame:SetAllPoints(healthBar)
 
-    -- shield bar (StatusBar for 12.0 secret value support)
-    local shieldBar = CreateFrame("StatusBar", name.."ShieldBar", midLevelFrame)
-    button.widgets.shieldBar = shieldBar
-    shieldBar:SetStatusBarTexture("Interface\\AddOns\\Cell\\Media\\shield")
-    do
-        local tex = shieldBar:GetStatusBarTexture()
-        if tex.SetHorizTile then tex:SetHorizTile(true) end
-        if tex.SetVertTile then tex:SetVertTile(true) end
+    -- shield bar
+    local shieldBar
+    if Cell.isMidnight then
+        -- Midnight: StatusBar so native SetMinMaxValues/SetValue work with secret values
+        shieldBar = CreateFrame("StatusBar", name.."ShieldBar", midLevelFrame)
+        shieldBar:SetStatusBarTexture("Interface\\AddOns\\Cell\\Media\\shield")
+        shieldBar:GetStatusBarTexture():SetDrawLayer("ARTWORK", -5)
+        shieldBar:SetFrameLevel(midLevelFrame:GetFrameLevel()+1)
+        shieldBar:SetAllPoints(healthBar)
+        -- Compatibility shims: map Texture methods to StatusBar equivalents
+        shieldBar.SetVertexColor = shieldBar.SetStatusBarColor
+        shieldBar.SetTexture = shieldBar.SetStatusBarTexture
+    else
+        -- Pre-Midnight: Texture with manual width/height positioning
+        shieldBar = midLevelFrame:CreateTexture(name.."ShieldBar", "ARTWORK", nil, -5)
+        shieldBar:SetTexture("Interface\\AddOns\\Cell\\Media\\shield", "REPEAT", "REPEAT")
+        shieldBar:SetHorizTile(true)
+        shieldBar:SetVertTile(true)
+        shieldBar.SetValue = DumbFunc
     end
-    shieldBar:SetFrameLevel(midLevelFrame:GetFrameLevel() + 1)
-    shieldBar:EnableMouse(false)
+    button.widgets.shieldBar = shieldBar
     shieldBar:Hide()
 
-    local shieldBarR = midLevelFrame:CreateTexture(name.."ShieldBarR", "ARTWORK", nil, -5)
+    local shieldBarR
+    if Cell.isMidnight then
+        -- Midnight: StatusBar for reverse-fill shield display with secret values
+        shieldBarR = CreateFrame("StatusBar", name.."ShieldBarR", midLevelFrame)
+        shieldBarR:SetStatusBarTexture("Interface\\AddOns\\Cell\\Media\\shield")
+        shieldBarR:GetStatusBarTexture():SetDrawLayer("ARTWORK", -5)
+        shieldBarR:SetFrameLevel(midLevelFrame:GetFrameLevel()+1)
+        shieldBarR:SetAllPoints(healthBar)
+        shieldBarR:SetReverseFill(true)
+        -- Compatibility shims: map Texture methods to StatusBar equivalents
+        shieldBarR.SetVertexColor = shieldBarR.SetStatusBarColor
+        shieldBarR.SetTexture = shieldBarR.SetStatusBarTexture
+    else
+        -- Pre-Midnight: Texture with manual width/height positioning
+        shieldBarR = midLevelFrame:CreateTexture(name.."ShieldBarR", "ARTWORK", nil, -5)
+        shieldBarR:SetTexture("Interface\\AddOns\\Cell\\Media\\shield", "REPEAT", "REPEAT")
+        shieldBarR:SetHorizTile(true)
+        shieldBarR:SetVertTile(true)
+    end
     button.widgets.shieldBarR = shieldBarR
-    shieldBarR:SetTexture("Interface\\AddOns\\Cell\\Media\\shield", "REPEAT", "REPEAT")
-    shieldBarR:SetHorizTile(true)
-    shieldBarR:SetVertTile(true)
     shieldBarR:Hide()
     shieldBar.shieldBarR = shieldBarR
 
@@ -4135,22 +4368,50 @@ function CellUnitButton_OnLoad(button)
     -- overAbsorbGlow:SetBlendMode("ADD")
     overAbsorbGlow:Hide()
 
-    -- absorbs bar (StatusBar for 12.0 secret value support)
-    local absorbsBar = CreateFrame("StatusBar", name.."AbsorbsBar", midLevelFrame)
+    -- absorbs bar
+    local absorbsBar
+    if Cell.isMidnight then
+        -- Midnight: StatusBar so native SetMinMaxValues/SetValue work with secret values
+        absorbsBar = CreateFrame("StatusBar", name.."AbsorbsBar", midLevelFrame)
+        absorbsBar:SetStatusBarTexture("Interface\\AddOns\\Cell\\Media\\shield.tga")
+        absorbsBar:GetStatusBarTexture():SetDrawLayer("ARTWORK", 1)
+        absorbsBar:SetStatusBarColor(1, 0.1, 0.1, 1)
+        absorbsBar:SetFrameLevel(midLevelFrame:GetFrameLevel()+2)
+        absorbsBar:SetAllPoints(healthBar)
+        absorbsBar:SetReverseFill(true)
+        -- Compatibility shims: map Texture methods to StatusBar equivalents
+        absorbsBar.SetVertexColor = absorbsBar.SetStatusBarColor
+        absorbsBar.SetTexture = absorbsBar.SetStatusBarTexture
+    else
+        -- Pre-Midnight: Texture with manual width/height positioning
+        absorbsBar = midLevelFrame:CreateTexture(name.."AbsorbsBar", "ARTWORK", nil, 1)
+        absorbsBar:SetTexture("Interface\\AddOns\\Cell\\Media\\shield.tga", "REPEAT", "REPEAT")
+        absorbsBar:SetHorizTile(true)
+        absorbsBar:SetVertTile(true)
+        absorbsBar:SetVertexColor(1, 0.1, 0.1, 1)
+        absorbsBar.SetValue = DumbFunc
+    end
     button.widgets.absorbsBar = absorbsBar
     absorbsBar.healthBar = healthBar
-    absorbsBar:SetStatusBarTexture("Interface\\AddOns\\Cell\\Media\\shield.tga")
-    do
-        local tex = absorbsBar:GetStatusBarTexture()
-        if tex.SetHorizTile then tex:SetHorizTile(true) end
-        if tex.SetVertTile then tex:SetVertTile(true) end
-    end
-    absorbsBar:SetStatusBarColor(1, 0.1, 0.1, 1)
-    absorbsBar:SetReverseFill(true)
-    absorbsBar:SetFrameLevel(midLevelFrame:GetFrameLevel() + 2)
-    absorbsBar:EnableMouse(false)
+    -- absorbsBar:SetBlendMode("ADD")
     absorbsBar:Hide()
     absorbsBar.overAbsorbGlow = overAbsorbGlow
+
+    -- Midnight: Overlay StatusBars need initial min/max for SetValue to work before UpdateHealthMax fires
+    if Cell.isMidnight then
+        if button.widgets.incomingHeal then
+            button.widgets.incomingHeal:SetMinMaxValues(0, 1)
+        end
+        if button.widgets.shieldBar then
+            button.widgets.shieldBar:SetMinMaxValues(0, 1)
+        end
+        if button.widgets.shieldBarR then
+            button.widgets.shieldBarR:SetMinMaxValues(0, 1)
+        end
+        if button.widgets.absorbsBar then
+            button.widgets.absorbsBar:SetMinMaxValues(0, 1)
+        end
+    end
 
     -- bar animation
     -- flash

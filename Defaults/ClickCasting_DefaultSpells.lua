@@ -75,7 +75,7 @@ local defaultSpells = {
             "406732C", -- Spatial Paradox - 空间悖论
             "378441P", -- Time Stop - 时间停止
             -- "374348C", -- Renewing Blaze - 新生光焰
-            "443328H", -- Engulf -- 焚身
+            -- "443328H", -- Engulf -- 焚身 (removed in 12.0)
         },
         -- 1467 - Devastation
         [1467] = {
@@ -208,27 +208,32 @@ local defaultSpells = {
             17, -- Power Word: Shield
             2061, -- Flash Heal
             2096, -- Mind Vision
-            "33076C", -- Prayer of Mending
+            -- "139C", -- Renew (removed in 12.0)
             "73325C", -- Leap of Faith
             "10060C", -- Power Infusion
-            "596S", -- Prayer of Healing
+            -- "373481C", -- Power Word: Life (removed in 12.0)
+            -- "108968C", -- Void Shift (removed in 12.0)
         },
         -- 256 - Discipline
         [256] = {
             212036, -- Mass Resurrection
             527, -- Purify
             47540, -- Penance
-            "200829C", -- Plea (new in 12.0)
+            "200829S", -- Plea (added in 12.0)
             "194509S", -- Power Word: Radiance
             "33206S", -- Pain Suppression
             "47536S", -- Rapture
             "62618S", -- Power Word: Barrier
+            -- "314867S", -- Shadow Covenant (removed in 12.0)
         },
         -- 257 - Holy
         [257] = {
             212036, -- Mass Resurrection
             527, -- Purify
+            2060, -- Heal
+            "33076S", -- Prayer of Mending (moved from class to Holy in 12.0)
             "2050S", -- Holy Word: Serenity
+            "596S", -- Prayer of Healing
             "34861S", -- Holy Word: Sanctify
             "47788S", -- Guardian Spirit
             "204883S", -- Circle of Healing

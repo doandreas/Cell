@@ -21,6 +21,7 @@ Cell.vars.playerFaction = UnitFactionGroup("player")
 Cell.isAsian = LOCALE_zhCN or LOCALE_zhTW or LOCALE_koKR
 
 Cell.isRetail = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+Cell.isMidnight = Cell.isRetail and (select(4, GetBuildInfo()) >= 120000)
 Cell.isVanilla = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
 Cell.isTBC = WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC
 Cell.isWrath = WOW_PROJECT_ID == WOW_PROJECT_WRATH_CLASSIC
@@ -2028,6 +2029,8 @@ end
 
 if Cell.isRetail then
     function F.FindDebuffByIds(unit, spellIds)
+        -- Midnight 12.0.0+: aura fields are secret during restricted contexts
+        if Cell.isMidnight and F.IsAuraRestricted() then return {} end
         local debuffs = {}
         AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
             if spellIds[spellId] then
@@ -2038,6 +2041,8 @@ if Cell.isRetail then
     end
 
     function F.FindAuraByDebuffTypes(unit, types)
+        -- Midnight 12.0.0+: aura fields are secret during restricted contexts
+        if Cell.isMidnight and F.IsAuraRestricted() then return {} end
         local debuffs = {}
         AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
             if types == "all" or types[debuffType] then
@@ -2380,7 +2385,6 @@ function F.IsInRange(unit, check)
         --! but not available for PLAYER PET when SOLO
         local ok, inRange, checked = pcall(function()
             local r, c = UnitInRange(unit)
-            -- force boolean test inside pcall to catch secret values
             if c then return r, true else return r, false end
         end)
         if not ok then return F.IsInRange(unit, true) end
@@ -2524,4 +2528,63 @@ end
 ---------------------------------------------------------------------
 if Cell.isMists then
 
+end
+
+-------------------------------------------------
+-- Secret value utilities (Patch 12.0.0+)
+-------------------------------------------------
+-- issecretvalue() is a native WoW API available in 12.0.0+
+function F.IsSecretValue(val)
+    if issecretvalue then
+        return issecretvalue(val)
+    end
+    return false
+end
+
+-- GetRestrictedActionStatus() returns non-secret boolean
+-- Enum.RestrictedActionType.SecretAuras = 0
+-- Enum.RestrictedActionType.SecretCooldowns = 1
+function F.IsAuraRestricted()
+    if GetRestrictedActionStatus and Enum and Enum.RestrictedActionType then
+        local isRestricted = GetRestrictedActionStatus(Enum.RestrictedActionType.SecretAuras)
+        return isRestricted == true
+    end
+    return false
+end
+
+function F.IsCooldownRestricted()
+    if GetRestrictedActionStatus and Enum and Enum.RestrictedActionType then
+        local isRestricted = GetRestrictedActionStatus(Enum.RestrictedActionType.SecretCooldowns)
+        return isRestricted == true
+    end
+    return false
+end
+
+-- Per-aura non-secret check: returns true if the aura's fields are real (non-secret) values.
+-- On Midnight 12.0.0+, Blizzard flags certain spells as non-secret; their auraInfo fields
+-- (spellId, expirationTime, duration, etc.) return real values instead of secrets.
+-- If spellId is readable (non-secret), ALL fields for this aura are non-secret.
+function F.IsAuraNonSecret(auraInfo)
+    if not Cell.isMidnight then return true end
+    if not issecretvalue then return true end
+    return not issecretvalue(auraInfo.spellId)
+end
+
+-- Proactive check: queries whether a spell ID will produce secret aura values.
+-- Uses C_Secrets.ShouldSpellAuraBeSecret() if available (Midnight 12.0.0+).
+-- Returns true if the spell's aura data will be non-secret (readable).
+function F.IsSpellAuraNonSecret(spellId)
+    if not Cell.isMidnight then return true end
+    if C_Secrets and C_Secrets.ShouldSpellAuraBeSecret then
+        return not C_Secrets.ShouldSpellAuraBeSecret(spellId)
+    end
+    return false -- assume secret if API unavailable
+end
+
+-- Generic check: returns true if a given value is NOT a secret value.
+-- Works for any return value from WoW APIs that may produce secrets on Midnight 12.0.0+.
+function F.IsValueNonSecret(val)
+    if not Cell.isMidnight then return true end
+    if not issecretvalue then return true end
+    return not issecretvalue(val)
 end
