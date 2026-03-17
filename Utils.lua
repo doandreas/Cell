@@ -1997,43 +1997,105 @@ end
 -- NOTE: FrameXML/AuraUtil.lua
 -- AuraUtil.FindAura(predicate, unit, filter, predicateArg1, predicateArg2, predicateArg3)
 -- predicate(predicateArg1, predicateArg2, predicateArg3, ...)
-local function predicate(...)
-    local idToFind = ...
-    local id = select(13, ...)
-    return idToFind == id
+if Cell.isMidnight then
+    -- Midnight: AuraUtil.FindAura calls UnpackAuraData which errors on secret values.
+    -- Use C_UnitAuras.GetAuraDataByIndex to iterate safely instead.
+    function F.FindAuraById(unit, type, spellId)
+        local filter = (type == "BUFF") and "HELPFUL" or "HARMFUL"
+        for i = 1, 40 do
+            local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, filter)
+            if not aura then break end
+            if not issecretvalue(aura.spellId) and aura.spellId == spellId then
+                local dur = F.IsValueNonSecret(aura.duration) and aura.duration or 0
+                local expir = F.IsValueNonSecret(aura.expirationTime) and aura.expirationTime or 0
+                local count = F.IsValueNonSecret(aura.applications) and aura.applications or 0
+                local dispel = F.IsValueNonSecret(aura.dispelName) and aura.dispelName or ""
+                local src = F.IsValueNonSecret(aura.sourceUnit) and aura.sourceUnit or nil
+                return aura.name, aura.icon, count, dispel, dur, expir, src
+            end
+        end
+    end
+else
+    local function predicate(...)
+        local idToFind = ...
+        local id = select(13, ...)
+        return idToFind == id
+    end
+
+    function F.FindAuraById(unit, type, spellId)
+        if type == "BUFF" then
+            return AuraUtil.FindAura(predicate, unit, "HELPFUL", spellId)
+        else
+            return AuraUtil.FindAura(predicate, unit, "HARMFUL", spellId)
+        end
+    end
 end
 
-function F.FindAuraById(unit, type, spellId)
-    if type == "BUFF" then
-        return AuraUtil.FindAura(predicate, unit, "HELPFUL", spellId)
-    else
-        return AuraUtil.FindAura(predicate, unit, "HARMFUL", spellId)
+-- Find aura by name (Midnight-safe: iterates with GetAuraDataByIndex)
+function F.FindAuraByName(unit, type, name)
+    local filter = (type == "BUFF") and "HELPFUL" or "HARMFUL"
+    for i = 1, 40 do
+        local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, filter)
+        if not aura then break end
+        if not issecretvalue(aura.name) and aura.name == name then
+            local dur = F.IsValueNonSecret(aura.duration) and aura.duration or 0
+            local expir = F.IsValueNonSecret(aura.expirationTime) and aura.expirationTime or 0
+            return aura.name, aura.icon, aura.applications, aura.dispelName, dur, expir, aura.sourceUnit
+        end
     end
 end
 
 if Cell.isRetail then
-    function F.FindDebuffByIds(unit, spellIds)
-        -- Midnight 12.0.0+: aura fields are secret during restricted contexts
-        if Cell.isMidnight and F.IsAuraRestricted() then return {} end
-        local debuffs = {}
-        AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
-            if spellIds[spellId] then
-                debuffs[spellId] = I.CheckDebuffType(debuffType, spellId)
+    if Cell.isMidnight then
+        function F.FindDebuffByIds(unit, spellIds)
+            if F.IsAuraRestricted() then return {} end
+            local debuffs = {}
+            for i = 1, 40 do
+                local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, "HARMFUL")
+                if not aura then break end
+                if not issecretvalue(aura.spellId) and spellIds[aura.spellId] then
+                    local dispel = F.IsValueNonSecret(aura.dispelName) and aura.dispelName or ""
+                    debuffs[aura.spellId] = I.CheckDebuffType(dispel, aura.spellId)
+                end
             end
-        end)
-        return debuffs
-    end
+            return debuffs
+        end
 
-    function F.FindAuraByDebuffTypes(unit, types)
-        -- Midnight 12.0.0+: aura fields are secret during restricted contexts
-        if Cell.isMidnight and F.IsAuraRestricted() then return {} end
-        local debuffs = {}
-        AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
-            if types == "all" or types[debuffType] then
-                debuffs[spellId] = I.CheckDebuffType(debuffType, spellId)
+        function F.FindAuraByDebuffTypes(unit, types)
+            if F.IsAuraRestricted() then return {} end
+            local debuffs = {}
+            for i = 1, 40 do
+                local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, "HARMFUL")
+                if not aura then break end
+                if not issecretvalue(aura.spellId) then
+                    local dispel = F.IsValueNonSecret(aura.dispelName) and aura.dispelName or ""
+                    if types == "all" or types[dispel] then
+                        debuffs[aura.spellId] = I.CheckDebuffType(dispel, aura.spellId)
+                    end
+                end
             end
-        end)
-        return debuffs
+            return debuffs
+        end
+    else
+        function F.FindDebuffByIds(unit, spellIds)
+            local debuffs = {}
+            AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
+                if spellIds[spellId] then
+                    debuffs[spellId] = I.CheckDebuffType(debuffType, spellId)
+                end
+            end)
+            return debuffs
+        end
+
+        function F.FindAuraByDebuffTypes(unit, types)
+            local debuffs = {}
+            AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
+                if types == "all" or types[debuffType] then
+                    debuffs[spellId] = I.CheckDebuffType(debuffType, spellId)
+                end
+            end)
+            return debuffs
+        end
     end
 else
     function F.FindDebuffByIds(unit, spellIds)
