@@ -2610,3 +2610,27 @@ function F.IsCooldownRestricted()
     end
     return false
 end
+
+-- Returns true if val is NOT a secret value (safe for arithmetic/comparisons)
+function F.IsValueNonSecret(val)
+    if not Cell.isMidnight then return true end
+    if not issecretvalue then return true end
+    return not issecretvalue(val)
+end
+
+-- Returns true if all fields of an auraInfo are non-secret
+-- (if spellId is non-secret, all other fields are too)
+function F.IsAuraNonSecret(auraInfo)
+    if not Cell.isMidnight then return true end
+    if not issecretvalue then return true end
+    return not issecretvalue(auraInfo.spellId)
+end
+
+-- Proactive check: will this spell's aura be secret?
+function F.IsSpellAuraNonSecret(spellId)
+    if not Cell.isMidnight then return true end
+    if C_Secrets and C_Secrets.ShouldSpellAuraBeSecret then
+        return not C_Secrets.ShouldSpellAuraBeSecret(spellId)
+    end
+    return false
+end

@@ -54,8 +54,10 @@ function F.HideBlizzardParty()
     if _G.PartyFrame then
         _G.PartyFrame:UnregisterAllEvents()
         _G.PartyFrame:SetScript("OnShow", nil)
-        for frame in _G.PartyFrame.PartyMemberFramePool:EnumerateActive() do
-            HideFrame(frame)
+        if _G.PartyFrame.PartyMemberFramePool then
+            for frame in _G.PartyFrame.PartyMemberFramePool:EnumerateActive() do
+                HideFrame(frame)
+            end
         end
         HideFrame(_G.PartyFrame)
     else

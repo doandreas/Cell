@@ -777,6 +777,8 @@ eventFrame:SetScript("OnEvent", function()
 end)
 
 local function CheckCondition(operator, checkedValue, currentValue)
+    -- Midnight 12.0.0+: applications (count) may be secret; comparisons on secret values throw errors
+    if issecretvalue and (issecretvalue(currentValue) or issecretvalue(checkedValue)) then return end
     if operator == "=" then
         if currentValue == checkedValue then return true end
     elseif operator == ">" then

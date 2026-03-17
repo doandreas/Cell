@@ -1275,14 +1275,15 @@ local function HandleDebuff(self, auraInfo)
         local spellIdSecret = issecretvalue(auraInfo.spellId)
         local hasSecrets = nameSecret or spellIdSecret
 
-        name = nameSecret and nil or auraInfo.name
+        name = not nameSecret and auraInfo.name or nil
         icon = auraInfo.icon -- keep raw (secret OK for SetTexture)
-        spellId = spellIdSecret and 0 or auraInfo.spellId
-        source = issecretvalue(auraInfo.sourceUnit) and nil or auraInfo.sourceUnit
+        -- NOTE: cannot use `X and 0 or Y` pattern — 0 is falsy in Lua!
+        if spellIdSecret then spellId = 0 else spellId = auraInfo.spellId end
+        source = not issecretvalue(auraInfo.sourceUnit) and auraInfo.sourceUnit or nil
         debuffType = issecretvalue(auraInfo.dispelName) and "" or (auraInfo.dispelName or "")
-        count = issecretvalue(auraInfo.applications) and 0 or (auraInfo.applications or 0)
-        duration = issecretvalue(auraInfo.duration) and 0 or (auraInfo.duration or 0)
-        expirationTime = issecretvalue(auraInfo.expirationTime) and 0 or (auraInfo.expirationTime or 0)
+        if issecretvalue(auraInfo.applications) then count = 0 else count = auraInfo.applications or 0 end
+        if issecretvalue(auraInfo.duration) then duration = 0 else duration = auraInfo.duration or 0 end
+        if issecretvalue(auraInfo.expirationTime) then expirationTime = 0 else expirationTime = auraInfo.expirationTime or 0 end
 
         -- Store safe values for code that needs non-secret data
         auraInfo._safeName = name
@@ -1291,7 +1292,7 @@ local function HandleDebuff(self, auraInfo)
         auraInfo._safeExpirationTime = expirationTime
         auraInfo._safeApplications = count
         auraInfo._safeDispelName = debuffType
-        auraInfo._safeIcon = issecretvalue(auraInfo.icon) and nil or auraInfo.icon
+        auraInfo._safeIcon = not issecretvalue(auraInfo.icon) and auraInfo.icon or nil
         auraInfo._hasSecrets = hasSecrets
         auraInfo._unit = self.states.displayedUnit
     else
@@ -1319,7 +1320,10 @@ local function HandleDebuff(self, auraInfo)
         if enabledIndicators["debuffs"] then
             if Cell.isMidnight and auraInfo._hasSecrets then
                 -- Can't check blacklist/bigDebuffs with secret spellId, show as normal
-                self._debuffs_normal[auraInstanceID] = true
+                -- But respect dispellableByMe filter via canActivePlayerDispel
+                if not indicatorBooleans["debuffs"] or auraInfo.canActivePlayerDispel then
+                    self._debuffs_normal[auraInstanceID] = true
+                end
             elseif not Cell.vars.debuffBlacklist[spellId] then
                 -- all debuffs / only dispellableByMe
                 if not indicatorBooleans["debuffs"] or I.CanDispel(debuffType) then
@@ -1365,14 +1369,15 @@ local function HandleDebuff(self, auraInfo)
         if enabledIndicators["dispels"] then
             if Cell.isMidnight and auraInfo._hasSecrets and GetAuraDispelTypeColor and midnightDispelCurve then
                 -- Midnight: use secret-safe API to get dispel type color
-                local ok, color = pcall(GetAuraDispelTypeColor, self.states.displayedUnit, auraInstanceID, midnightDispelCurve)
-                if ok and color then
-                    auraInfo._dispelColor = color
-                    if not self._debuffs_midnightDispelColor then
-                        self._debuffs_midnightDispelColor = color
+                -- Filter by dispellableByMe using the WoW-provided canActivePlayerDispel field
+                if not indicatorBooleans["dispels"]["dispellableByMe"] or auraInfo.canActivePlayerDispel then
+                    local ok, color = pcall(GetAuraDispelTypeColor, self.states.displayedUnit, auraInstanceID, midnightDispelCurve)
+                    if ok and color then
+                        auraInfo._dispelColor = color
+                        if not self._debuffs_midnightDispelColor then
+                            self._debuffs_midnightDispelColor = color
+                        end
                     end
-                else
-                    -- GetAuraDispelTypeColor failed or returned nil
                 end
             elseif debuffType and debuffType ~= "" then
                 -- all dispels / only dispellableByMe
@@ -1705,20 +1710,21 @@ local function HandleBuff(self, auraInfo)
         local spellIdSecret = issecretvalue(auraInfo.spellId)
         local hasSecrets = nameSecret or spellIdSecret
 
-        name = nameSecret and nil or auraInfo.name
+        name = not nameSecret and auraInfo.name or nil
         icon = auraInfo.icon -- keep raw for SetTexture
-        spellId = spellIdSecret and 0 or auraInfo.spellId
-        source = issecretvalue(auraInfo.sourceUnit) and nil or auraInfo.sourceUnit
-        count = issecretvalue(auraInfo.applications) and 0 or (auraInfo.applications or 0)
-        duration = issecretvalue(auraInfo.duration) and 0 or (auraInfo.duration or 0)
-        expirationTime = issecretvalue(auraInfo.expirationTime) and 0 or (auraInfo.expirationTime or 0)
+        -- NOTE: cannot use `X and 0 or Y` pattern — 0 is falsy in Lua!
+        if spellIdSecret then spellId = 0 else spellId = auraInfo.spellId end
+        source = not issecretvalue(auraInfo.sourceUnit) and auraInfo.sourceUnit or nil
+        if issecretvalue(auraInfo.applications) then count = 0 else count = auraInfo.applications or 0 end
+        if issecretvalue(auraInfo.duration) then duration = 0 else duration = auraInfo.duration or 0 end
+        if issecretvalue(auraInfo.expirationTime) then expirationTime = 0 else expirationTime = auraInfo.expirationTime or 0 end
 
         auraInfo._safeName = name
         auraInfo._safeSpellId = spellId
         auraInfo._safeDuration = duration
         auraInfo._safeExpirationTime = expirationTime
         auraInfo._safeApplications = count
-        auraInfo._safeIcon = issecretvalue(auraInfo.icon) and nil or auraInfo.icon
+        auraInfo._safeIcon = not issecretvalue(auraInfo.icon) and auraInfo.icon or nil
         auraInfo._hasSecrets = hasSecrets
         auraInfo._unit = unit
     else
@@ -2492,7 +2498,9 @@ UnitButton_UpdatePowerText = function(self)
     if not self._shouldShowPowerText then return end
 
     if self.states.powerMax and self.states.power and not self.states.isDeadOrGhost then
-        self.indicators.powerText:SetValue(self.states.power, self.states.powerMax)
+        -- Midnight: power values may be secret; SetValue formatters do arithmetic
+        local ok = pcall(self.indicators.powerText.SetValue, self.indicators.powerText, self.states.power, self.states.powerMax)
+        if not ok then self.indicators.powerText:Hide() end
     else
         self.indicators.powerText:Hide()
     end
@@ -3323,7 +3331,7 @@ local function UnitButton_OnEvent(self, event, unit, arg)
             UnitButton_UpdateReadyCheck(self)
 
         elseif event == "UNIT_PORTRAIT_UPDATE" then -- pet summoned far away
-            if self.states.healthMax == 0 then
+            if not F.IsSecretValue(self.states.healthMax) and self.states.healthMax == 0 then
                 self._updateRequired = 1
                 self._powerUpdateRequired = 1
             end
@@ -4128,7 +4136,12 @@ function B.UpdateAnimation(button)
 
     if barAnimationType == "Smooth" then
         button.widgets.healthBar.SetBarValue = button.widgets.healthBar.SetSmoothedValue
-        button.widgets.powerBar.SetBarValue = button.widgets.powerBar.SetSmoothedValue
+        -- Midnight: power values may be secret; SmoothStatusBarMixin does arithmetic internally
+        if Cell.isMidnight then
+            button.widgets.powerBar.SetBarValue = button.widgets.powerBar.SetValue
+        else
+            button.widgets.powerBar.SetBarValue = button.widgets.powerBar.SetSmoothedValue
+        end
     else
         button.widgets.healthBar:ResetSmoothedValue()
         button.widgets.healthBar.SetBarValue = button.widgets.healthBar.SetValue

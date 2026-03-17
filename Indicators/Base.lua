@@ -11,6 +11,18 @@ local P = Cell.pixelPerfectFuncs
 -- is guarded for secret values in Indicators/Built-in.lua (HealthText_SetValue).
 -- All other numeric display in this file uses SetText/SetFormattedText which accept secrets.
 
+-- Midnight: aura count (applications) may be secret; sanitize before comparison/indexing
+local function _SanitizeCount(count)
+    if issecretvalue and issecretvalue(count) then return 0 end
+    return count or 0
+end
+
+-- Midnight-safe stack text: returns "" for 0/1, otherwise the count
+local function _StackText(count)
+    count = _SanitizeCount(count)
+    return (count == 0 or count == 1) and "" or count
+end
+
 local LCG = LibStub("LibCustomGlow-1.0")
 
 CELL_BORDER_SIZE = 1
@@ -471,7 +483,7 @@ local function BorderIcon_SetCooldown(frame, start, duration, debuffType, textur
     end
 
     frame.icon:SetTexture(texture)
-    frame.stack:SetText((count == 0 or count == 1) and "" or count)
+    frame.stack:SetText(_StackText(count))
     frame:Show()
 
     if refreshing then
@@ -615,7 +627,7 @@ local function BarIcon_SetCooldown(frame, start, duration, debuffType, texture, 
     end
 
     frame.icon:SetTexture(texture)
-    frame.stack:SetText((count == 0 or count == 1) and "" or count)
+    frame.stack:SetText(_StackText(count))
     frame:Show()
 
     if refreshing then
@@ -1038,6 +1050,7 @@ end
 
 local circled = {"①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮","⑯","⑰","⑱","⑲","⑳","㉑","㉒","㉓","㉔","㉕","㉖","㉗","㉘","㉙","㉚","㉛","㉜","㉝","㉞","㉟","㊱","㊲","㊳","㊴","㊵","㊶","㊷","㊸","㊹","㊺","㊻","㊼","㊽","㊾","㊿"}
 local function Text_SetCooldown(frame, start, duration, debuffType, texture, count)
+    count = _SanitizeCount(count)
     if duration == 0 then
         -- always show stack
         count = count == 0 and 1 or count
@@ -1192,7 +1205,7 @@ local function Rect_SetCooldown(frame, start, duration, debuffType, texture, cou
         frame:SetScript("OnUpdate", Rect_OnUpdate)
     end
 
-    frame.stack:SetText((count == 0 or count == 1) and "" or count)
+    frame.stack:SetText(_StackText(count))
     frame:Show()
 end
 
@@ -1324,7 +1337,7 @@ local function Bar_SetCooldown(bar, start, duration, debuffType, texture, count)
         bar:SetScript("OnUpdate", Bar_OnUpdate)
     end
 
-    bar.stack:SetText((count == 0 or count == 1) and "" or count)
+    bar.stack:SetText(_StackText(count))
     bar:Show()
 end
 
@@ -1430,7 +1443,7 @@ local function Bars_SetCooldown(bar, start, duration, debuffType, texture, count
 
     bar:SetStatusBarColor(color[1], color[2], color[3], color[4])
     bar:SetBackdropColor(color[1] * 0.2, color[2] * 0.2, color[3] * 0.2, color[4])
-    bar.stack:SetText((count == 0 or count == 1) and "" or count)
+    bar.stack:SetText(_StackText(count))
     bar:Show()
 end
 
@@ -2042,7 +2055,7 @@ local function Block_SetCooldown_Duration(frame, start, duration, debuffType, te
         frame:SetScript("OnUpdate", Block_OnUpdate_Duration)
     end
 
-    frame.stack:SetText((count == 0 or count == 1) and "" or count)
+    frame.stack:SetText(_StackText(count))
     frame:Show()
 
     if refreshing then
@@ -2076,6 +2089,7 @@ local function Block_OnUpdate_Stack(frame, elapsed)
 end
 
 local function Block_SetCooldown_Stack(frame, start, duration, debuffType, texture, count, refreshing)
+    count = _SanitizeCount(count)
     if duration == 0 then
         frame.cooldown:Hide()
         frame.duration:Hide()
@@ -2116,7 +2130,7 @@ local function Block_SetCooldown_Stack(frame, start, duration, debuffType, textu
         frame:SetBackdropColor(frame.colors[2][1], frame.colors[2][2], frame.colors[2][3], frame.colors[2][4])
     end
 
-    frame.stack:SetText((count == 0 or count == 1) and "" or count)
+    frame.stack:SetText(_StackText(count))
     frame:Show()
 
     if refreshing then
@@ -2243,7 +2257,7 @@ local function Blocks_SetCooldown(frame, start, duration, debuffType, texture, c
     end
 
     frame:SetBackdropColor(color[1], color[2], color[3], color[4])
-    frame.stack:SetText((count == 0 or count == 1) and "" or count)
+    frame.stack:SetText(_StackText(count))
     frame:Show()
 
     if refreshing then

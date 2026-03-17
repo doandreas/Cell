@@ -267,6 +267,7 @@ end
 -- dispels: custom debuff type color
 -------------------------------------------------
 function I.GetDebuffTypeColor(debuffType)
+    if issecretvalue and issecretvalue(debuffType) then return 0, 0, 0 end
     if debuffType and CellDB["debuffTypeColor"][debuffType] then
         return CellDB["debuffTypeColor"][debuffType]["r"], CellDB["debuffTypeColor"][debuffType]["g"],
             CellDB["debuffTypeColor"][debuffType]["b"]
