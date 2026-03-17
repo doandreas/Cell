@@ -27,11 +27,6 @@ local UnitGetTotalAbsorbs = UnitGetTotalAbsorbs
 local UnitGetTotalHealAbsorbs = UnitGetTotalHealAbsorbs
 -- 12.0+ APIs for secret value support
 local issecretvalue = issecretvalue or function() return false end
-local function SafeBoolTest(val)
-    local ok, r = pcall(function(v) if v then return true else return false end end, val)
-    if ok then return r end
-    return false
-end
 local UnitHealthPercent = UnitHealthPercent
 local CreateUnitHealPredictionCalculator = CreateUnitHealPredictionCalculator
 local UnitGetDetailedHealPrediction = UnitGetDetailedHealPrediction
@@ -71,11 +66,9 @@ local UnitPhaseReason = UnitPhaseReason
 local IsInRaid = IsInRaid
 local UnitDetailedThreatSituation = UnitDetailedThreatSituation
 local CombatLogGetCurrentEventInfo = CombatLogGetCurrentEventInfo -- nil in 12.0+
-local _GetAuraDataByAuraInstanceID = C_UnitAuras.GetAuraDataByAuraInstanceID
+local GetAuraDataByAuraInstanceID = C_UnitAuras.GetAuraDataByAuraInstanceID
 local GetAuraSlots = C_UnitAuras.GetAuraSlots
-local _GetAuraDataBySlot = C_UnitAuras.GetAuraDataBySlot
--- wrapped versions applied after SanitizeAura is defined (see below)
-local GetAuraDataByAuraInstanceID, GetAuraDataBySlot
+local GetAuraDataBySlot = C_UnitAuras.GetAuraDataBySlot
 -- 12.0 Midnight secret-safe aura display APIs
 local GetAuraDuration = C_UnitAuras and C_UnitAuras.GetAuraDuration
 local GetAuraApplicationDisplayCount = C_UnitAuras and C_UnitAuras.GetAuraApplicationDisplayCount
@@ -124,100 +117,6 @@ local function SetBarValueSmooth(bar, value)
 end
 
 local CheckCLEURequired
-
--------------------------------------------------
--- 12.0+ secret value sanitizer for aura data
--------------------------------------------------
-local function SafeVal(val, fallback)
-    if val == nil then return fallback end
-    if issecretvalue and issecretvalue(val) then return fallback end
-    return val
-end
-
-local function SafeBool(val)
-    if val == nil then return false end
-    if issecretvalue and issecretvalue(val) then
-        -- secret boolean: use pcall to evaluate truthiness
-        local ok, r = pcall(function(v) if v then return true else return false end end, val)
-        if ok then return r end
-        return false
-    end
-    return val and true or false
-end
-
-local function SanitizeAura(aura)
-    if not aura then return nil end
-
-    if not Cell.isMidnight then
-        -- pre-Midnight: original sanitizer (no secrets)
-        local ok, clean = pcall(function()
-            local t = {}
-            t.name = aura.name and (aura.name .. "")
-            t.icon = aura.icon
-            t.applications = aura.applications and (aura.applications + 0) or 0
-            t.expirationTime = aura.expirationTime and (aura.expirationTime + 0) or 0
-            t.duration = aura.duration and (aura.duration + 0) or 0
-            t.spellId = aura.spellId and (aura.spellId + 0)
-            t.auraInstanceID = aura.auraInstanceID and (aura.auraInstanceID + 0)
-            t.sourceUnit = aura.sourceUnit
-            t.dispelName = aura.dispelName
-            t.isHelpful = aura.isHelpful and true or false
-            t.isHarmful = aura.isHarmful and true or false
-            t.isBossAura = aura.isBossAura and true or false
-            t.isRaid = aura.isRaid and true or false
-            t.isStealable = aura.isStealable and true or false
-            t.isFromPlayerOrPlayerPet = aura.isFromPlayerOrPlayerPet and true or false
-            t.canApplyAura = aura.canApplyAura and true or false
-            t.nameplateShowAll = aura.nameplateShowAll and true or false
-            t.nameplateShowPersonal = aura.nameplateShowPersonal and true or false
-            t.canActivePlayerDispel = aura.canActivePlayerDispel and true or false
-            t.timeMod = aura.timeMod and (aura.timeMod + 0) or 1
-            t.points = aura.points
-            t.refreshing = aura.refreshing
-            t.oldExpirationTime = aura.oldExpirationTime
-            t.oldApplications = aura.oldApplications
-            return t
-        end)
-        if not ok then return nil end
-        return clean
-    end
-
-    -- Midnight: keep secret values as-is, only sanitize what we must
-    local t = {}
-    t.auraInstanceID = aura.auraInstanceID -- always non-secret
-    t.name = aura.name                     -- may be secret, handled in HandleDebuff/HandleBuff
-    t.icon = aura.icon
-    t.applications = aura.applications
-    t.expirationTime = aura.expirationTime
-    t.duration = aura.duration
-    t.spellId = aura.spellId
-    t.sourceUnit = aura.sourceUnit
-    t.dispelName = aura.dispelName
-    t.isHelpful = SafeBool(aura.isHelpful)
-    t.isHarmful = SafeBool(aura.isHarmful)
-    t.isBossAura = SafeBool(aura.isBossAura)
-    t.isRaid = SafeBool(aura.isRaid)
-    t.isStealable = SafeBool(aura.isStealable)
-    t.isFromPlayerOrPlayerPet = SafeBool(aura.isFromPlayerOrPlayerPet)
-    t.canApplyAura = SafeBool(aura.canApplyAura)
-    t.nameplateShowAll = SafeBool(aura.nameplateShowAll)
-    t.nameplateShowPersonal = SafeBool(aura.nameplateShowPersonal)
-    t.canActivePlayerDispel = SafeBool(aura.canActivePlayerDispel)
-    t.timeMod = SafeVal(aura.timeMod, 1)
-    t.points = aura.points
-    t.refreshing = aura.refreshing
-    t.oldExpirationTime = aura.oldExpirationTime
-    t.oldApplications = aura.oldApplications
-    return t
-end
-
--- wrap aura data retrieval to sanitize secret values
-GetAuraDataByAuraInstanceID = function(unit, id)
-    return SanitizeAura(_GetAuraDataByAuraInstanceID(unit, id))
-end
-GetAuraDataBySlot = function(unit, slot)
-    return SanitizeAura(_GetAuraDataBySlot(unit, slot))
-end
 
 -------------------------------------------------
 -- unit button func declarations
@@ -1644,7 +1543,7 @@ local function UnitButton_UpdateDebuffs(self, isFullUpdate)
     end
 
     -- update dispels
-    if F.UnitInGroup(unit) or SafeBoolTest(UnitIsFriend("player", unit)) then
+    if F.UnitInGroup(unit) or UnitIsFriend("player", unit) then
         self.indicators.dispels:SetDispels(self._debuffs_dispel)
         -- Midnight: use secret-safe dispel color to show highlight directly
         -- Note: color.r/g/b are secret values; SetVertexColor (C-level) accepts them,
@@ -2039,7 +1938,7 @@ UnitButton_UpdateAuras = function(self, updateInfo)
 
         if updateInfo.addedAuras then
             for _, rawAura in next, updateInfo.addedAuras do
-                local aura = SanitizeAura(rawAura)
+                local aura = rawAura
                 if aura then
                     if aura.isHelpful then
                         buffsChanged = true
@@ -2060,16 +1959,16 @@ UnitButton_UpdateAuras = function(self, updateInfo)
                     buffsChanged = true
                     aura = GetAuraDataByAuraInstanceID(unit, auraInstanceID)
                     if aura then
-                        aura.oldExpirationTime = SafeVal(self._buffs_cache[auraInstanceID].expirationTime, 0)
-                        aura.oldApplications = SafeVal(self._buffs_cache[auraInstanceID].applications, 0)
+                        aura.oldExpirationTime = (F.IsValueNonSecret(self._buffs_cache[auraInstanceID].expirationTime) and self._buffs_cache[auraInstanceID].expirationTime or 0)
+                        aura.oldApplications = (F.IsValueNonSecret(self._buffs_cache[auraInstanceID].applications) and self._buffs_cache[auraInstanceID].applications or 0)
                         self._buffs_cache[auraInstanceID] = aura
                     end
                 elseif self._debuffs_cache[auraInstanceID] then
                     debuffsChanged = true
                     aura = GetAuraDataByAuraInstanceID(unit, auraInstanceID)
                     if aura then
-                        aura.oldExpirationTime = SafeVal(self._debuffs_cache[auraInstanceID].expirationTime, 0)
-                        aura.oldApplications = SafeVal(self._debuffs_cache[auraInstanceID].applications, 0)
+                        aura.oldExpirationTime = (F.IsValueNonSecret(self._debuffs_cache[auraInstanceID].expirationTime) and self._debuffs_cache[auraInstanceID].expirationTime or 0)
+                        aura.oldApplications = (F.IsValueNonSecret(self._debuffs_cache[auraInstanceID].applications) and self._debuffs_cache[auraInstanceID].applications or 0)
                         self._debuffs_cache[auraInstanceID] = aura
                     end
                 else
@@ -2167,7 +2066,7 @@ local function UnitButton_UpdateHealthStates(self, diff)
     end
 
     self.states.wasDeadOrGhost = self.states.isDeadOrGhost
-    self.states.isDeadOrGhost = SafeBoolTest(UnitIsDeadOrGhost(unit))
+    self.states.isDeadOrGhost = UnitIsDeadOrGhost(unit)
     if self.states.wasDeadOrGhost ~= self.states.isDeadOrGhost then
         I.UpdateStatusIcon_Resurrection(self)
         UnitButton_UpdateHealthColor(self)
@@ -2227,7 +2126,7 @@ ShouldShowPowerText = function(b)
     elseif F.IsPet(b.states.guid) then
         class = "PET"
     elseif F.IsNPC(b.states.guid) then
-        if SafeBoolTest(UnitInPartyIsAI(b.states.unit)) then
+        if UnitInPartyIsAI(b.states.unit) then
             class = b.states.class
             role = GetRole(b)
         else
@@ -2269,7 +2168,7 @@ ShouldShowPowerBar = function(b)
     elseif F.IsPet(b.states.guid) then
         class = "PET"
     elseif F.IsNPC(b.states.guid) then
-        if SafeBoolTest(UnitInPartyIsAI(b.states.unit)) then
+        if UnitInPartyIsAI(b.states.unit) then
             class = b.states.class
             role = GetRole(b)
         else
@@ -2355,7 +2254,7 @@ local function UnitButton_UpdateTarget(self)
     local unit = self.states.displayedUnit
     if not unit then return end
 
-    if SafeBoolTest(UnitIsUnit(unit, "target")) then
+    if UnitIsUnit(unit, "target") then
         if highlightEnabled then self.widgets.targetHighlight:Show() end
     else
         self.widgets.targetHighlight:Hide()
@@ -2393,7 +2292,7 @@ UnitButton_UpdateRole = function(self)
         roleIcon:SetRole(role)
 
         --! check vehicle root
-        if self.states.guid and strfind(self.states.guid, "^Vehicle") and not SafeBoolTest(UnitInPartyIsAI(unit)) then
+        if self.states.guid and strfind(self.states.guid, "^Vehicle") and not UnitInPartyIsAI(unit) then
             CheckVehicleRoot(self, unit)
         end
     else
@@ -2413,9 +2312,9 @@ UnitButton_UpdateLeader = function(self, event)
             return
         end
 
-        local isLeader = SafeBoolTest(UnitIsGroupLeader(unit))
+        local isLeader = UnitIsGroupLeader(unit)
         self.states.isLeader = isLeader
-        local isAssistant = SafeBoolTest(UnitIsGroupAssistant(unit)) and IsInRaid()
+        local isAssistant = UnitIsGroupAssistant(unit) and IsInRaid()
         self.states.isAssistant = isAssistant
 
         leaderIcon:SetIcon(isLeader, isAssistant)
@@ -2546,7 +2445,7 @@ UnitButton_UpdatePowerType = function(self)
     local r, g, b, lossR, lossG, lossB
     local a = Cell.loaded and CellDB["appearance"]["lossAlpha"] or 1
 
-    if not SafeBoolTest(UnitIsConnected(unit)) then
+    if not UnitIsConnected(unit) then
         r, g, b = 0.4, 0.4, 0.4
         lossR, lossG, lossB = 0.4, 0.4, 0.4
     else
@@ -2811,7 +2710,7 @@ end
 
 local function UnitButton_UpdateThreat(self)
     local unit = self.states.displayedUnit
-    if not unit or not SafeBoolTest(UnitExists(unit)) then return end
+    if not unit or not UnitExists(unit) then return end
 
     local ok, status = pcall(UnitThreatSituation, unit)
     if ok and status and status >= 1 then
@@ -2834,7 +2733,7 @@ local function UnitButton_UpdateThreatBar(self)
     end
 
     local unit = self.states.displayedUnit
-    if not unit or not SafeBoolTest(UnitExists(unit)) then return end
+    if not unit or not UnitExists(unit) then return end
 
     -- isTanking, status, scaledPercentage, rawPercentage, threatValue = UnitDetailedThreatSituation(unit, mobUnit)
     local _, status, scaledPercentage, rawPercentage = UnitDetailedThreatSituation(unit, "target")
@@ -2853,7 +2752,7 @@ local function UnitButton_UpdateCombatIcon(self)
     local unit = self.states.displayedUnit
     if not unit then return end
 
-    if not (indicatorBooleans["combatIcon"] and InCombatLockdown()) and SafeBoolTest(UnitAffectingCombat(unit)) then
+    if not (indicatorBooleans["combatIcon"] and InCombatLockdown()) and UnitAffectingCombat(unit) then
         self.indicators.combatIcon:Show()
     else
         self.indicators.combatIcon:Hide()
@@ -2894,7 +2793,7 @@ local function UnitButton_UpdateVehicleStatus(self)
     local unit = self.states.unit
     if not unit then return end
 
-    if SafeBoolTest(UnitHasVehicleUI(unit)) then -- or UnitInVehicle(unit) or UnitUsingVehicle(unit) then
+    if UnitHasVehicleUI(unit) then -- or UnitInVehicle(unit) or UnitUsingVehicle(unit) then
         self.states.inVehicle = true
         if unit == "player" then
             self.states.displayedUnit = "vehicle"
@@ -2925,27 +2824,27 @@ UnitButton_UpdateStatusText = function(self)
     self.states.guid = UnitGUID(unit) -- update!
     if not self.states.guid then return end
 
-    if not SafeBoolTest(UnitIsConnected(unit)) and SafeBoolTest(UnitIsPlayer(unit)) then
+    if not UnitIsConnected(unit) and UnitIsPlayer(unit) then
         statusText:Show()
         statusText:SetStatus("OFFLINE")
         statusText:ShowTimer()
-    elseif SafeBoolTest(UnitIsAFK(unit)) then
+    elseif UnitIsAFK(unit) then
         statusText:Show()
         statusText:SetStatus("AFK")
         statusText:ShowTimer()
-    elseif SafeBoolTest(UnitIsFeignDeath(unit)) then
+    elseif UnitIsFeignDeath(unit) then
         statusText:Show()
         statusText:SetStatus("FEIGN")
         statusText:HideTimer(true)
-    elseif SafeBoolTest(UnitIsDeadOrGhost(unit)) then
+    elseif UnitIsDeadOrGhost(unit) then
         statusText:Show()
         statusText:HideTimer(true)
-        if SafeBoolTest(UnitIsGhost(unit)) then
+        if UnitIsGhost(unit) then
             statusText:SetStatus("GHOST")
         else
             statusText:SetStatus("DEAD")
         end
-    elseif SafeBoolTest(C_IncomingSummon.HasIncomingSummon(unit)) then
+    elseif C_IncomingSummon.HasIncomingSummon(unit) then
         statusText:Show()
         statusText:HideTimer()
         local status = C_IncomingSummon.IncomingSummonStatus(unit)
@@ -2978,7 +2877,7 @@ local function UnitButton_UpdateName(self)
     self.states.fullName = F.UnitFullName(unit)
     self.states.class = UnitClassBase(unit)
     self.states.guid = UnitGUID(unit)
-    self.states.isPlayer = SafeBoolTest(UnitIsPlayer(unit))
+    self.states.isPlayer = UnitIsPlayer(unit)
 
     self.indicators.nameText:UpdateName()
 end
@@ -2988,8 +2887,8 @@ UnitButton_UpdateNameTextColor = function(self)
     if not unit then return end
 
     if enabledIndicators["nameText"] then
-        if indicatorColors["nameText"][1] == "class_color" or not SafeBoolTest(UnitIsConnected(unit))
-        or ((SafeBoolTest(UnitIsPlayer(unit)) or SafeBoolTest(UnitInPartyIsAI(unit))) and SafeBoolTest(UnitIsCharmed(unit))) or self.states.inVehicle then
+        if indicatorColors["nameText"][1] == "class_color" or not UnitIsConnected(unit)
+        or ((UnitIsPlayer(unit) or UnitInPartyIsAI(unit)) and UnitIsCharmed(unit)) or self.states.inVehicle then
             self.indicators.nameText:SetColor(F.GetUnitClassColor(unit))
         else
             self.indicators.nameText:SetColor(unpack(indicatorColors["nameText"][2]))
@@ -3021,11 +2920,11 @@ UnitButton_UpdateHealthColor = function(self)
         lossA =  CellDB["appearance"]["lossAlpha"]
     end
 
-    if SafeBoolTest(UnitIsPlayer(unit)) or SafeBoolTest(UnitInPartyIsAI(unit)) then -- player
-        if not SafeBoolTest(UnitIsConnected(unit)) then
+    if UnitIsPlayer(unit) or UnitInPartyIsAI(unit) then -- player
+        if not UnitIsConnected(unit) then
             barR, barG, barB = 0.4, 0.4, 0.4
             lossR, lossG, lossB = 0.4, 0.4, 0.4
-        elseif SafeBoolTest(UnitIsCharmed(unit)) then
+        elseif UnitIsCharmed(unit) then
             barR, barG, barB, barA = 0.5, 0, 1, 1
             lossR, lossG, lossB, lossA = barR*0.2, barG*0.2, barB*0.2, 1
         elseif self.states.inVehicle then
@@ -3539,7 +3438,7 @@ local function UnitButton_OnTick(self)
                 if not self.isSpotlight then Cell.vars.guids[guid] = self.states.unit end
 
                 -- NOTE: only save players' names
-                if SafeBoolTest(UnitIsPlayer(self.states.unit)) then
+                if UnitIsPlayer(self.states.unit) then
                     -- update Cell.vars.names
                     local name = GetUnitName(self.states.unit, true)
                     if (name and self.__nameRetries and self.__nameRetries >= 4) or (name and name ~= UNKNOWN and name ~= UNKNOWNOBJECT) then
