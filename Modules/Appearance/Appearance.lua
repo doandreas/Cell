@@ -421,8 +421,10 @@ local function CreatePreviewButtons()
 
     previewButton:SetScript("OnHide", function()
         previewButton.perc = 100
-        ticker:Cancel()
-        ticker = nil
+        if ticker then
+            ticker:Cancel()
+            ticker = nil
+        end
     end)
 
     Cell.Fire("CreatePreview", previewButton, previewButton2)
@@ -496,9 +498,9 @@ local function UpdatePreviewButton(which)
         previewButton.widgets.healthBarLoss:SetTexture(Cell.vars.texture)
         previewButton.widgets.powerBar:SetStatusBarTexture(Cell.vars.texture)
         previewButton.widgets.powerBarLoss:SetTexture(Cell.vars.texture)
-        if previewButton.widgets.incomingHeal.SetStatusBarTexture then
+        if Cell.isMidnight then
             previewButton.widgets.incomingHeal:SetStatusBarTexture(Cell.vars.texture)
-        elseif previewButton.widgets.incomingHeal.SetTexture then
+        else
             previewButton.widgets.incomingHeal:SetTexture(Cell.vars.texture)
         end
         previewButton.widgets.damageFlashTex:SetTexture(Cell.vars.texture)
@@ -509,9 +511,9 @@ local function UpdatePreviewButton(which)
         previewButton2.widgets.powerBar:SetStatusBarTexture(Cell.vars.texture)
         previewButton2.widgets.powerBar:GetStatusBarTexture():SetDrawLayer("ARTWORK", -7) --! VERY IMPORTANT
         previewButton2.widgets.powerBarLoss:SetTexture(Cell.vars.texture)
-        if previewButton2.widgets.incomingHeal.SetStatusBarTexture then
+        if Cell.isMidnight then
             previewButton2.widgets.incomingHeal:SetStatusBarTexture(Cell.vars.texture)
-        elseif previewButton2.widgets.incomingHeal.SetTexture then
+        else
             previewButton2.widgets.incomingHeal:SetTexture(Cell.vars.texture)
         end
         previewButton2.widgets.damageFlashTex:SetTexture(Cell.vars.texture)
@@ -574,7 +576,7 @@ local function CheckTextures()
     local textures, textureNames
     local defaultTexture, defaultTextureName = "Interface\\AddOns\\Cell\\Media\\statusbar.tga", "Cell ".._G.DEFAULT
 
-    if LSM then
+    -- if LSM then
         textures, textureNames = F.Copy(LSM:HashTable("statusbar")), F.Copy(LSM:List("statusbar"))
 
         -- make default texture first
@@ -592,24 +594,24 @@ local function CheckTextures()
                 end,
             })
         end
-    else
-        textureNames = {defaultTextureName}
-        textures = {[defaultTextureName] = defaultTexture}
+    -- else
+    --     textureNames = {defaultTextureName}
+    --     textures = {[defaultTextureName] = defaultTexture}
 
-        tinsert(items, {
-            ["text"] = defaultTextureName,
-            ["texture"] = defaultTexture,
-            ["onClick"] = function()
-                CellDB["appearance"]["texture"] = defaultTextureName
-                F.GetBarTexture() -- update Cell.vars.texture NOW
-                Cell.Fire("UpdateAppearance", "texture")
-            end,
-        })
-    end
+    --     tinsert(items, {
+    --         ["text"] = defaultTextureName,
+    --         ["texture"] = defaultTexture,
+    --         ["onClick"] = function()
+    --             CellDB["appearance"]["texture"] = defaultTextureName
+    --             F.GetBarTexture() -- update Cell.vars.texture NOW
+    --             Cell.Fire("UpdateAppearance", "texture")
+    --         end,
+    --     })
+    -- end
     textureDropdown:SetItems(items)
 
     -- validation
-    if textures and textures[CellDB["appearance"]["texture"]] then
+    if textures[CellDB["appearance"]["texture"]] then
         textureDropdown:SetSelected(CellDB["appearance"]["texture"], textures[CellDB["appearance"]["texture"]])
     else
         textureDropdown:SetSelected(defaultTextureName, defaultTexture)

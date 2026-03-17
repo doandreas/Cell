@@ -6,13 +6,6 @@ local F = Cell.funcs
 ---@type CellIndicatorFuncs
 local I = Cell.iFuncs
 
--- 12.0+ secret boolean helper
-local function SafeBoolTest(val)
-    local ok, r = pcall(function(v) if v then return true else return false end end, val)
-    if ok then return r end
-    return false
-end
-
 Cell.vars.playerFaction = UnitFactionGroup("player")
 
 -------------------------------------------------
@@ -28,15 +21,6 @@ Cell.isWrath = WOW_PROJECT_ID == WOW_PROJECT_WRATH_CLASSIC
 Cell.isCata = WOW_PROJECT_ID == WOW_PROJECT_CATACLYSM_CLASSIC
 Cell.isMists = WOW_PROJECT_ID == WOW_PROJECT_MISTS_CLASSIC
 Cell.isTWW = LE_EXPANSION_LEVEL_CURRENT == LE_EXPANSION_WAR_WITHIN
--- NOTE: LE_EXPANSION_MIDNIGHT may not exist yet; keep the build number check from line 24
-
--------------------------------------------------
--- 12.0+ API compatibility shims
--------------------------------------------------
--- IsEncounterInProgress moved to C_InstanceEncounter namespace in 12.0
-if not IsEncounterInProgress and C_InstanceEncounter and C_InstanceEncounter.IsEncounterInProgress then
-    IsEncounterInProgress = C_InstanceEncounter.IsEncounterInProgress
-end
 
 if Cell.isRetail then
     Cell.flavor = "retail"
@@ -828,7 +812,7 @@ end
 -- end
 
 function F.UnitFullName(unit)
-    if not unit or not SafeBoolTest(UnitIsPlayer(unit)) then return end
+    if not unit or not UnitIsPlayer(unit) then return end
 
     local name = GetUnitName(unit, true)
 
@@ -1010,7 +994,7 @@ function F.GetUnitButtonByUnit(unit, getSpotlights, getQuickAssist)
     if getSpotlights then
         spotlights = {}
         for _, b in pairs(Cell.unitButtons.spotlight) do
-            if b.unit and SafeBoolTest(UnitIsUnit(b.unit, unit)) then
+            if b.unit and UnitIsUnit(b.unit, unit) then
                 tinsert(spotlights, b)
             end
         end
@@ -1062,7 +1046,7 @@ function F.HandleUnitButton(type, unit, func, ...)
     end
 
     for _, b in pairs(Cell.unitButtons.spotlight) do
-        if b.states.unit and SafeBoolTest(UnitIsUnit(b.states.unit, unit)) then
+        if b.states.unit and UnitIsUnit(b.states.unit, unit) then
             func(b, ...)
             handled = true
         end
@@ -1177,7 +1161,7 @@ function F.GetUnitClassColor(unit, class, guid)
     class = class or select(2, UnitClass(unit))
     guid = guid or UnitGUID(unit)
 
-    if SafeBoolTest(UnitIsPlayer(unit)) or SafeBoolTest(UnitInPartyIsAI(unit)) then -- player
+    if UnitIsPlayer(unit) or UnitInPartyIsAI(unit) then -- player
         return F.GetClassColor(class)
     elseif F.IsPet(guid, unit) then -- pet
         return 0.5, 0.5, 1
@@ -1443,31 +1427,31 @@ end
 
 function F.UnitInGroup(unit, ignorePets)
     if ignorePets then
-        return SafeBoolTest(UnitIsUnit(unit, "player")) or SafeBoolTest(UnitInParty(unit)) or SafeBoolTest(UnitInRaid(unit)) or SafeBoolTest(UnitInPartyIsAI(unit))
+        return UnitIsUnit(unit, "player") or UnitInParty(unit) or UnitInRaid(unit) or UnitInPartyIsAI(unit)
     else
-        return SafeBoolTest(UnitIsUnit(unit, "player")) or SafeBoolTest(UnitIsUnit(unit, "pet")) or SafeBoolTest(UnitPlayerOrPetInParty(unit)) or SafeBoolTest(UnitPlayerOrPetInRaid(unit)) or SafeBoolTest(UnitInPartyIsAI(unit))
+        return UnitIsUnit(unit, "player") or UnitIsUnit(unit, "pet") or UnitPlayerOrPetInParty(unit) or UnitPlayerOrPetInRaid(unit) or UnitInPartyIsAI(unit)
     end
 end
 
 -- UnitTokenFromGUID
 function F.GetTargetUnitID(target)
-    if SafeBoolTest(UnitIsUnit(target, "player")) then
+    if UnitIsUnit(target, "player") then
         return "player"
-    elseif SafeBoolTest(UnitIsUnit(target, "pet")) then
+    elseif UnitIsUnit(target, "pet") then
         return "pet"
     end
 
     if not F.UnitInGroup(target) then return end
 
-    if SafeBoolTest(UnitIsPlayer(target)) or SafeBoolTest(UnitInPartyIsAI(target)) then
+    if UnitIsPlayer(target) or UnitInPartyIsAI(target) then
         for unit in F.IterateGroupMembers() do
-            if SafeBoolTest(UnitIsUnit(target, unit)) then
+            if UnitIsUnit(target, unit) then
                 return unit
             end
         end
     else
         for unit in F.IterateGroupPets() do
-            if SafeBoolTest(UnitIsUnit(target, unit)) then
+            if UnitIsUnit(target, unit) then
                 return unit
             end
         end
@@ -1475,15 +1459,15 @@ function F.GetTargetUnitID(target)
 end
 
 function F.GetTargetPetID(target)
-    if SafeBoolTest(UnitIsUnit(target, "player")) then
+    if UnitIsUnit(target, "player") then
         return "pet"
     end
 
     if not F.UnitInGroup(target) then return end
 
-    if SafeBoolTest(UnitIsPlayer(target)) or SafeBoolTest(UnitInPartyIsAI(target)) then
+    if UnitIsPlayer(target) or UnitInPartyIsAI(target) then
         for unit in F.IterateGroupMembers() do
-            if SafeBoolTest(UnitIsUnit(target, unit)) then
+            if UnitIsUnit(target, unit) then
                 return F.GetPetUnit(unit)
             end
         end
@@ -1528,28 +1512,28 @@ function F.IsVehicle(guid)
 end
 
 function F.GetTargetUnitInfo()
-    if SafeBoolTest(UnitIsUnit("target", "player")) then
+    if UnitIsUnit("target", "player") then
         return "player", UnitName("player"), UnitClassBase("player")
-    elseif SafeBoolTest(UnitIsUnit("target", "pet")) then
+    elseif UnitIsUnit("target", "pet") then
         return "pet", UnitName("pet")
     end
     if not F.UnitInGroup("target") then return end
 
     if IsInRaid() then
         for i = 1, GetNumGroupMembers() do
-            if SafeBoolTest(UnitIsUnit("target", "raid"..i)) then
+            if UnitIsUnit("target", "raid"..i) then
                 return "raid"..i, UnitName("raid"..i), UnitClassBase("raid"..i)
             end
-            if SafeBoolTest(UnitIsUnit("target", "raidpet"..i)) then
+            if UnitIsUnit("target", "raidpet"..i) then
                 return "raidpet"..i, UnitName("raidpet"..i)
             end
         end
     elseif IsInGroup() then
         for i = 1, GetNumGroupMembers()-1 do
-            if SafeBoolTest(UnitIsUnit("target", "party"..i)) then
+            if UnitIsUnit("target", "party"..i) then
                 return "party"..i, UnitName("party"..i), UnitClassBase("party"..i)
             end
-            if SafeBoolTest(UnitIsUnit("target", "partypet"..i)) then
+            if UnitIsUnit("target", "partypet"..i) then
                 return "partypet"..i, UnitName("partypet"..i)
             end
         end
@@ -2013,93 +1997,43 @@ end
 -- NOTE: FrameXML/AuraUtil.lua
 -- AuraUtil.FindAura(predicate, unit, filter, predicateArg1, predicateArg2, predicateArg3)
 -- predicate(predicateArg1, predicateArg2, predicateArg3, ...)
-if Cell.isMidnight then
-    -- Midnight: AuraUtil.FindAura calls UnpackAuraData which errors on secret points.
-    -- Use C_UnitAuras.GetAuraDataBySpellName or iterate with GetAuraDataByIndex instead.
-    function F.FindAuraById(unit, type, spellId)
-        local filter = (type == "BUFF") and "HELPFUL" or "HARMFUL"
-        for i = 1, 40 do
-            local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, filter)
-            if not aura then break end
-            local ok, sid = pcall(function() return aura.spellId end)
-            if ok and not F.IsSecretValue(sid) and sid == spellId then
-                local dur = 0
-                local expir = 0
-                pcall(function() dur = aura.duration or 0 end)
-                pcall(function() expir = aura.expirationTime or 0 end)
-                return aura.name, aura.icon, aura.applications, aura.dispelName, dur, expir, aura.sourceUnit
-            end
-        end
-    end
-else
-    local function predicate(...)
-        local idToFind = ...
-        local id = select(13, ...)
-        return idToFind == id
-    end
+local function predicate(...)
+    local idToFind = ...
+    local id = select(13, ...)
+    return idToFind == id
+end
 
-    function F.FindAuraById(unit, type, spellId)
-        if type == "BUFF" then
-            return AuraUtil.FindAura(predicate, unit, "HELPFUL", spellId)
-        else
-            return AuraUtil.FindAura(predicate, unit, "HARMFUL", spellId)
-        end
+function F.FindAuraById(unit, type, spellId)
+    if type == "BUFF" then
+        return AuraUtil.FindAura(predicate, unit, "HELPFUL", spellId)
+    else
+        return AuraUtil.FindAura(predicate, unit, "HARMFUL", spellId)
     end
 end
 
 if Cell.isRetail then
-    if Cell.isMidnight then
-        function F.FindDebuffByIds(unit, spellIds)
-            local debuffs = {}
-            for i = 1, 40 do
-                local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, "HARMFUL")
-                if not aura then break end
-                local ok, sid = pcall(function() return aura.spellId end)
-                if ok and not F.IsSecretValue(sid) and spellIds[sid] then
-                    local dispel = ""
-                    pcall(function() dispel = aura.dispelName or "" end)
-                    debuffs[sid] = I.CheckDebuffType(dispel, sid)
-                end
+    function F.FindDebuffByIds(unit, spellIds)
+        -- Midnight 12.0.0+: aura fields are secret during restricted contexts
+        if Cell.isMidnight and F.IsAuraRestricted() then return {} end
+        local debuffs = {}
+        AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
+            if spellIds[spellId] then
+                debuffs[spellId] = I.CheckDebuffType(debuffType, spellId)
             end
-            return debuffs
-        end
+        end)
+        return debuffs
+    end
 
-        function F.FindAuraByDebuffTypes(unit, types)
-            local debuffs = {}
-            for i = 1, 40 do
-                local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, "HARMFUL")
-                if not aura then break end
-                local ok, sid = pcall(function() return aura.spellId end)
-                if ok and not F.IsSecretValue(sid) then
-                    local dispel = ""
-                    pcall(function() dispel = aura.dispelName or "" end)
-                    if types == "all" or types[dispel] then
-                        debuffs[sid] = I.CheckDebuffType(dispel, sid)
-                    end
-                end
+    function F.FindAuraByDebuffTypes(unit, types)
+        -- Midnight 12.0.0+: aura fields are secret during restricted contexts
+        if Cell.isMidnight and F.IsAuraRestricted() then return {} end
+        local debuffs = {}
+        AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
+            if types == "all" or types[debuffType] then
+                debuffs[spellId] = I.CheckDebuffType(debuffType, spellId)
             end
-            return debuffs
-        end
-    else
-        function F.FindDebuffByIds(unit, spellIds)
-            local debuffs = {}
-            AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
-                if spellIds[spellId] then
-                    debuffs[spellId] = I.CheckDebuffType(debuffType, spellId)
-                end
-            end)
-            return debuffs
-        end
-
-        function F.FindAuraByDebuffTypes(unit, types)
-            local debuffs = {}
-            AuraUtil.ForEachAura(unit, "HARMFUL", nil, function(name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId)
-                if types == "all" or types[debuffType] then
-                    debuffs[spellId] = I.CheckDebuffType(debuffType, spellId)
-                end
-            end)
-            return debuffs
-        end
+        end)
+        return debuffs
     end
 else
     function F.FindDebuffByIds(unit, spellIds)
@@ -2357,18 +2291,11 @@ local harmItems = {
 local UnitInSpellRange
 if C_Spell and C_Spell.IsSpellInRange then
     UnitInSpellRange = function(spellName, unit)
-        local ok, result = pcall(function()
-            local r = IsSpellInRange(spellName, unit)
-            if r then return true else return false end
-        end)
-        if not ok then return nil end
-        return result
+        return IsSpellInRange(spellName, unit)
     end
 else
     UnitInSpellRange = function(spellName, unit)
-        local ok, result = pcall(function() return IsSpellInRange(spellName, unit) == 1 end)
-        if not ok then return nil end
-        return result
+        return IsSpellInRange(spellName, unit) == 1
     end
 end
 
@@ -2422,62 +2349,60 @@ end
 rc:SetScript("OnEvent", DELAYED_SPELLS_CHANGED)
 
 function F.IsInRange(unit, check)
-    local okVis, visible = pcall(function() if UnitIsVisible(unit) then return true else return false end end)
-    if not okVis or not visible then
+    if not UnitIsVisible(unit) then
         return false
     end
 
-    if SafeBoolTest(UnitIsUnit("player", unit)) then
+    if UnitIsUnit("player", unit) then
         return true
 
     elseif not check and F.UnitInGroup(unit) then
         -- NOTE: UnitInRange only works with group players/pets
         --! but not available for PLAYER PET when SOLO
-        local ok, inRange, checked = pcall(function()
-            local r, c = UnitInRange(unit)
-            -- force boolean test inside pcall to catch secret values
-            if c then return r, true else return r, false end
-        end)
-        if not ok then return F.IsInRange(unit, true) end
+        local inRange, checked = UnitInRange(unit)
+        -- Midnight 12.0.0+: UnitInRange returns secret booleans during restricted contexts
+        if Cell.isMidnight and issecretvalue and issecretvalue(checked) then
+            return F.IsInRange(unit, true)
+        end
         if not checked then
             return F.IsInRange(unit, true)
         end
         return inRange
 
     else
-        if SafeBoolTest(UnitCanAssist("player", unit)) then -- or UnitCanCooperate("player", unit)
-            if not (SafeBoolTest(UnitIsConnected(unit)) and SafeBoolTest(UnitInSamePhase(unit))) then
+        if UnitCanAssist("player", unit) then -- or UnitCanCooperate("player", unit)
+            if not (UnitIsConnected(unit) and UnitInSamePhase(unit)) then
                 return false
             end
 
-            if SafeBoolTest(UnitIsDead(unit)) then
+            if UnitIsDead(unit) then
                 if spell_dead then
-                    return SafeBoolTest(UnitInSpellRange(spell_dead, unit))
+                    return UnitInSpellRange(spell_dead, unit)
                 end
             elseif spell_friend then
-                return SafeBoolTest(UnitInSpellRange(spell_friend, unit))
+                return UnitInSpellRange(spell_friend, unit)
             end
 
-            local ok2, inRange2, checked2 = pcall(function()
-                local r, c = UnitInRange(unit)
-                if c then return r, true else return r, false end
-            end)
-            if ok2 and checked2 then
-                return inRange2
+            local inRange, checked = UnitInRange(unit)
+            -- Midnight 12.0.0+: UnitInRange returns secret booleans during restricted contexts
+            if Cell.isMidnight and issecretvalue and issecretvalue(checked) then
+                -- Skip, fall through to pet/interact checks below
+            elseif checked then
+                return inRange
             end
 
-            if SafeBoolTest(UnitIsUnit(unit, "pet")) and spell_pet then
+            if UnitIsUnit(unit, "pet") and spell_pet then
                 -- no spell_friend, use spell_pet
-                return SafeBoolTest(UnitInSpellRange(spell_pet, unit))
+                return UnitInSpellRange(spell_pet, unit)
             end
 
-        elseif SafeBoolTest(UnitCanAttack("player", unit)) then
-            if SafeBoolTest(UnitIsDead(unit)) then
-                return SafeBoolTest(CheckInteractDistance(unit, 4)) -- 28 yards
+        elseif UnitCanAttack("player", unit) then
+            if UnitIsDead(unit) then
+                return CheckInteractDistance(unit, 4) -- 28 yards
             elseif spell_harm then
-                return SafeBoolTest(UnitInSpellRange(spell_harm, unit))
+                return UnitInSpellRange(spell_harm, unit)
             end
-            return SafeBoolTest(IsItemInRange(harmItems[playerClass], unit))
+            return IsItemInRange(harmItems[playerClass], unit)
         end
 
         if not InCombatLockdown() then
@@ -2611,26 +2536,31 @@ function F.IsCooldownRestricted()
     return false
 end
 
--- Returns true if val is NOT a secret value (safe for arithmetic/comparisons)
-function F.IsValueNonSecret(val)
-    if not Cell.isMidnight then return true end
-    if not issecretvalue then return true end
-    return not issecretvalue(val)
-end
-
--- Returns true if all fields of an auraInfo are non-secret
--- (if spellId is non-secret, all other fields are too)
+-- Per-aura non-secret check: returns true if the aura's fields are real (non-secret) values.
+-- On Midnight 12.0.0+, Blizzard flags certain spells as non-secret; their auraInfo fields
+-- (spellId, expirationTime, duration, etc.) return real values instead of secrets.
+-- If spellId is readable (non-secret), ALL fields for this aura are non-secret.
 function F.IsAuraNonSecret(auraInfo)
     if not Cell.isMidnight then return true end
     if not issecretvalue then return true end
     return not issecretvalue(auraInfo.spellId)
 end
 
--- Proactive check: will this spell's aura be secret?
+-- Proactive check: queries whether a spell ID will produce secret aura values.
+-- Uses C_Secrets.ShouldSpellAuraBeSecret() if available (Midnight 12.0.0+).
+-- Returns true if the spell's aura data will be non-secret (readable).
 function F.IsSpellAuraNonSecret(spellId)
     if not Cell.isMidnight then return true end
     if C_Secrets and C_Secrets.ShouldSpellAuraBeSecret then
         return not C_Secrets.ShouldSpellAuraBeSecret(spellId)
     end
-    return false
+    return false -- assume secret if API unavailable
+end
+
+-- Generic check: returns true if a given value is NOT a secret value.
+-- Works for any return value from WoW APIs that may produce secrets on Midnight 12.0.0+.
+function F.IsValueNonSecret(val)
+    if not Cell.isMidnight then return true end
+    if not issecretvalue then return true end
+    return not issecretvalue(val)
 end

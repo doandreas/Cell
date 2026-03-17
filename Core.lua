@@ -31,12 +31,12 @@ local P = Cell.pixelPerfectFuncs
 local L = Cell.L
 
 -- sharing version check
-Cell.MIN_VERSION = 246
-Cell.MIN_CLICKCASTINGS_VERSION = 246
-Cell.MIN_LAYOUTS_VERSION = 246
-Cell.MIN_INDICATORS_VERSION = 246
-Cell.MIN_DEBUFFS_VERSION = 246
-Cell.MIN_QUICKASSIST_VERSION = 246
+Cell.MIN_VERSION = 275
+Cell.MIN_CLICKCASTINGS_VERSION = 275
+Cell.MIN_LAYOUTS_VERSION = 275
+Cell.MIN_INDICATORS_VERSION = 275
+Cell.MIN_DEBUFFS_VERSION = 275
+Cell.MIN_QUICKASSIST_VERSION = 275
 
 --@debug@
 local debugMode = false
@@ -821,7 +821,9 @@ function eventFrame:PLAYER_LOGIN()
     if GetBattlegroundInfo then
         for i = 1, GetNumBattlegroundTypes() do
             local bgName, _, _, _, _, _, bgId, maxPlayers = GetBattlegroundInfo(i)
-            bgMaxPlayers[bgId] = maxPlayers
+            if bgId then
+                bgMaxPlayers[bgId] = maxPlayers
+            end
         end
     end
 
