@@ -2626,3 +2626,81 @@ function F.IsValueNonSecret(val)
     if not issecretvalue then return true end
     return not issecretvalue(val)
 end
+
+-------------------------------------------------
+-- Secret aura fingerprinting (Midnight 12.0.0+)
+-------------------------------------------------
+-- Uses IsAuraFilteredOutByInstanceID with 4 filter strings to build a
+-- signature that identifies secret auras without reading their spellId.
+-- Approach adapted from DandersFrames.
+
+local IsAuraFilteredOutByInstanceID = C_UnitAuras and C_UnitAuras.IsAuraFilteredOutByInstanceID
+
+-- Filter strings for building signatures
+local FILTER_RAID = "PLAYER|HELPFUL|RAID"
+local FILTER_RIC  = "PLAYER|HELPFUL|RAID_IN_COMBAT"
+local FILTER_EXT  = "PLAYER|HELPFUL|EXTERNAL_DEFENSIVE"
+local FILTER_DISP = "PLAYER|HELPFUL|RAID_PLAYER_DISPELLABLE"
+
+-- Global signature table: signature -> { spellId, name, category }
+-- category: "external", "defensive", "buff"
+-- Collisions within the same category are fine (all show the same indicator).
+local secretSignatures = {
+    -- "1:1:1:0" = external defensives (Pain Suppression, Guardian Spirit, Ironbark, Life Cocoon, BoSacrifice, Time Dilation)
+    ["1:1:1:0"] = { category = "external", spells = {
+        {spellId = 33206, name = "Pain Suppression"},
+        {spellId = 47788, name = "Guardian Spirit"},
+        {spellId = 102342, name = "Ironbark"},
+        {spellId = 116849, name = "Life Cocoon"},
+        {spellId = 6940,  name = "Blessing of Sacrifice"},
+        {spellId = 357170, name = "Time Dilation"},
+    }},
+    -- "1:0:0:1" = Power Infusion, Blessing of Freedom
+    ["1:0:0:1"] = { category = "external", spells = {
+        {spellId = 10060, name = "Power Infusion"},
+        {spellId = 1044,  name = "Blessing of Freedom"},
+    }},
+    -- "1:1:1:1" = Blessing of Protection
+    ["1:1:1:1"] = { category = "external", spells = {
+        {spellId = 1022, name = "Blessing of Protection"},
+    }},
+    -- "0:1:0:1" = Strength of the Black Ox
+    ["0:1:0:1"] = { category = "external", spells = {
+        {spellId = 443113, name = "Strength of the Black Ox"},
+    }},
+}
+
+local function BuildAuraSignature(unit, auraInstanceID)
+    if not IsAuraFilteredOutByInstanceID then return nil end
+
+    local ok1, r1 = pcall(IsAuraFilteredOutByInstanceID, unit, auraInstanceID, FILTER_RAID)
+    local ok2, r2 = pcall(IsAuraFilteredOutByInstanceID, unit, auraInstanceID, FILTER_RIC)
+    local ok3, r3 = pcall(IsAuraFilteredOutByInstanceID, unit, auraInstanceID, FILTER_EXT)
+    local ok4, r4 = pcall(IsAuraFilteredOutByInstanceID, unit, auraInstanceID, FILTER_DISP)
+
+    if not (ok1 and ok2 and ok3 and ok4) then return nil end
+
+    -- passes filter = NOT filtered out
+    local sig = (r1 == false and "1" or "0") .. ":" ..
+                (r2 == false and "1" or "0") .. ":" ..
+                (r3 == false and "1" or "0") .. ":" ..
+                (r4 == false and "1" or "0")
+    return sig
+end
+
+-- Resolve a secret aura to its real identity using filter fingerprinting.
+-- Returns: spellId, name, category   OR   nil if unrecognized
+function F.ResolveSecretAura(unit, auraInstanceID)
+    if not Cell.isMidnight then return nil end
+    if not IsAuraFilteredOutByInstanceID then return nil end
+
+    local sig = BuildAuraSignature(unit, auraInstanceID)
+    if not sig then return nil end
+
+    local match = secretSignatures[sig]
+    if not match then return nil end
+
+    -- Return first spell in the list (all are same category, icon comes from auraInfo)
+    local spell = match.spells[1]
+    return spell.spellId, spell.name, match.category
+end

@@ -1644,11 +1644,31 @@ local function HandleBuff(self, auraInfo)
         UpdateAuraRefreshState(auraInfo)
         self._buffs_cache[auraInstanceID] = auraInfo
 
-        -- When fields are secret, skip name/spellId matching (can't identify auras)
+        -- When fields are secret, try fingerprinting to identify the aura
         if Cell.isMidnight and auraInfo._hasSecrets then
-            -- Skip defensiveCooldowns, externalCooldowns, etc. - can't match by name/spellId
-            -- But still process custom indicators (Custom.lua handles secrets; wildcard [0] still works)
-            -- Sanitize auraInfo fields in-place for user code snippet compatibility
+            local resolvedId, resolvedName, resolvedCategory = F.ResolveSecretAura(unit, auraInstanceID)
+            if resolvedId then
+                -- Fingerprinting succeeded — process through normal indicator path
+                if resolvedCategory == "external" then
+                    if enabledIndicators["defensiveCooldowns"] and I.IsDefensiveCooldown(resolvedName, resolvedId) and self._buffs.defensiveFound < indicatorNums["defensiveCooldowns"] then
+                        self._buffs.defensiveFound = self._buffs.defensiveFound + 1
+                        self.indicators.defensiveCooldowns[self._buffs.defensiveFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
+                    end
+                    if enabledIndicators["externalCooldowns"] and I.IsExternalCooldown(resolvedName, resolvedId, source, unit) and self._buffs.externalFound < indicatorNums["externalCooldowns"] then
+                        self._buffs.externalFound = self._buffs.externalFound + 1
+                        self.indicators.externalCooldowns[self._buffs.externalFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
+                    end
+                    if enabledIndicators["allCooldowns"] and (I.IsExternalCooldown(resolvedName, resolvedId, source, unit) or I.IsDefensiveCooldown(resolvedName, resolvedId)) and self._buffs.allFound < indicatorNums["allCooldowns"] then
+                        self._buffs.allFound = self._buffs.allFound + 1
+                        self.indicators.allCooldowns[self._buffs.allFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
+                    end
+                end
+                if enabledIndicators["tankActiveMitigation"] and I.IsTankActiveMitigation(resolvedId) then
+                    self.indicators.tankActiveMitigation:SetCooldown(start, duration)
+                    self._buffs.tankActiveMitigationFound = true
+                end
+            end
+            -- Still process custom indicators
             auraInfo.name = auraInfo._safeName
             auraInfo.spellId = auraInfo._safeSpellId
             auraInfo.duration = auraInfo._safeDuration
