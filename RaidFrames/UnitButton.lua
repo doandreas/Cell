@@ -1246,6 +1246,8 @@ local function HandleDebuff(self, auraInfo)
             auraInfo.applications = auraInfo._safeApplications
             auraInfo.dispelName = auraInfo._safeDispelName
             auraInfo.sourceUnit = source
+            auraInfo.isHelpful = false
+            auraInfo.isHarmful = true
         end
         I.UpdateCustomIndicators(self, auraInfo)
 
@@ -1675,6 +1677,8 @@ local function HandleBuff(self, auraInfo)
             auraInfo.expirationTime = auraInfo._safeExpirationTime
             auraInfo.applications = auraInfo._safeApplications
             auraInfo.sourceUnit = source
+            auraInfo.isHelpful = true
+            auraInfo.isHarmful = false
             I.UpdateCustomIndicators(self, auraInfo)
         else
             -- defensiveCooldowns
