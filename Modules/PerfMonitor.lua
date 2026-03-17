@@ -66,27 +66,24 @@ end
 local hasProfilerAPI = C_AddOnProfiler and C_AddOnProfiler.GetAddOnMetric and Enum and Enum.AddOnProfilerMetric
 local profilerMetrics = {}
 
+local issecretvalue = issecretvalue or function() return false end
+
+local function SafeMetric(metric)
+    local ok, val = pcall(C_AddOnProfiler.GetAddOnMetric, ADDON_NAME, metric)
+    if not ok then return 0 end
+    if issecretvalue(val) then return 0 end
+    return val
+end
+
 local function UpdateProfilerMetrics()
     if not hasProfilerAPI then return end
 
-    local ok, recent = pcall(C_AddOnProfiler.GetAddOnMetric, ADDON_NAME, Enum.AddOnProfilerMetric.RecentAverageTime)
-    profilerMetrics.recentAvg = ok and (recent * 1000) or 0  -- convert seconds to ms
-
-    ok, recent = pcall(C_AddOnProfiler.GetAddOnMetric, ADDON_NAME, Enum.AddOnProfilerMetric.PeakTime)
-    profilerMetrics.peak = ok and (recent * 1000) or 0
-
-    ok, recent = pcall(C_AddOnProfiler.GetAddOnMetric, ADDON_NAME, Enum.AddOnProfilerMetric.LastTime)
-    profilerMetrics.lastTick = ok and (recent * 1000) or 0
-
-    ok, recent = pcall(C_AddOnProfiler.GetAddOnMetric, ADDON_NAME, Enum.AddOnProfilerMetric.EncounterAverageTime)
-    profilerMetrics.encounterAvg = ok and (recent * 1000) or 0
-
-    -- spike counters
-    ok, recent = pcall(C_AddOnProfiler.GetAddOnMetric, ADDON_NAME, Enum.AddOnProfilerMetric.CountTimeOver5Ms)
-    profilerMetrics.spikesOver5ms = ok and recent or 0
-
-    ok, recent = pcall(C_AddOnProfiler.GetAddOnMetric, ADDON_NAME, Enum.AddOnProfilerMetric.CountTimeOver10Ms)
-    profilerMetrics.spikesOver10ms = ok and recent or 0
+    profilerMetrics.recentAvg = SafeMetric(Enum.AddOnProfilerMetric.RecentAverageTime) * 1000
+    profilerMetrics.peak = SafeMetric(Enum.AddOnProfilerMetric.PeakTime) * 1000
+    profilerMetrics.lastTick = SafeMetric(Enum.AddOnProfilerMetric.LastTime) * 1000
+    profilerMetrics.encounterAvg = SafeMetric(Enum.AddOnProfilerMetric.EncounterAverageTime) * 1000
+    profilerMetrics.spikesOver5ms = SafeMetric(Enum.AddOnProfilerMetric.CountTimeOver5Ms)
+    profilerMetrics.spikesOver10ms = SafeMetric(Enum.AddOnProfilerMetric.CountTimeOver10Ms)
 end
 
 -------------------------------------------------
