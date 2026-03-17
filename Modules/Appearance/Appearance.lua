@@ -434,9 +434,18 @@ local function UpdatePreviewShields(r, g, b)
     if CellDB["appearance"]["healPrediction"][1] then
         previewButton2.widgets.incomingHeal:SetValue(0.2, 0.6)
         if CellDB["appearance"]["healPrediction"][2] then
-            previewButton2.widgets.incomingHeal:SetVertexColor(CellDB["appearance"]["healPrediction"][3][1], CellDB["appearance"]["healPrediction"][3][2], CellDB["appearance"]["healPrediction"][3][3], CellDB["appearance"]["healPrediction"][3][4])
+            local hp = CellDB["appearance"]["healPrediction"][3]
+            if Cell.isMidnight then
+                previewButton2.widgets.incomingHeal:SetStatusBarColor(hp[1], hp[2], hp[3], hp[4])
+            else
+                previewButton2.widgets.incomingHeal:SetVertexColor(hp[1], hp[2], hp[3], hp[4])
+            end
         else
-            previewButton2.widgets.incomingHeal:SetVertexColor(r, g, b, 0.4)
+            if Cell.isMidnight then
+                previewButton2.widgets.incomingHeal:SetStatusBarColor(r, g, b, 0.4)
+            else
+                previewButton2.widgets.incomingHeal:SetVertexColor(r, g, b, 0.4)
+            end
         end
     else
         previewButton2.widgets.incomingHeal:Hide()
