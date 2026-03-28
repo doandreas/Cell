@@ -82,14 +82,16 @@ if C_CurveUtil and C_CurveUtil.CreateColorCurve and Enum and Enum.LuaCurveType t
     midnightDispelCurve = C_CurveUtil.CreateColorCurve()
     midnightDispelCurve:SetType(Enum.LuaCurveType.Step)
     -- Indices from wago.tools DB2 SpellDispelType
+    -- Physical (0) and Bleed (11) use alpha=0 so they render invisible
+    -- even when secret values prevent Lua-level filtering
     local dispelColors = {
-        [0]  = {r=0.80, g=0.00, b=0.00, a=1.0}, -- None (physical) = red
+        [0]  = {r=0.80, g=0.00, b=0.00, a=0.0}, -- None (physical) = transparent
         [1]  = {r=0.20, g=0.60, b=1.00, a=1.0}, -- Magic = blue
         [2]  = {r=0.60, g=0.00, b=1.00, a=1.0}, -- Curse = purple
         [3]  = {r=0.60, g=0.40, b=0.00, a=1.0}, -- Disease = brown
         [4]  = {r=0.00, g=0.60, b=0.00, a=1.0}, -- Poison = green
         [9]  = {r=0.80, g=0.30, b=0.00, a=1.0}, -- Enrage = orange
-        [11] = {r=0.80, g=0.00, b=0.00, a=1.0}, -- Bleed = red
+        [11] = {r=0.80, g=0.00, b=0.00, a=0.0}, -- Bleed = transparent
     }
     for idx, c in pairs(dispelColors) do
         midnightDispelCurve:AddPoint(idx, CreateColor(c.r, c.g, c.b, c.a))
@@ -1283,10 +1285,15 @@ local function HandleDebuff(self, auraInfo)
                 -- fall back to IsAuraFilteredOutByInstanceID, default to showing
                 local canDispel = auraInfo.canActivePlayerDispel
                 if issecretvalue(canDispel) then
-                    -- canActivePlayerDispel is secret; default to showing.
-                    -- Physical debuffs are still filtered out by the color curve
-                    -- check below (isPhysical). Better to over-show than miss a dispel.
-                    canDispel = true
+                    -- canActivePlayerDispel is secret; use filter API to check
+                    canDispel = false
+                    if IsAuraFilteredOutByInstanceID then
+                        local ok, filtered = pcall(IsAuraFilteredOutByInstanceID, self.states.displayedUnit, auraInstanceID, "RAID_PLAYER_DISPELLABLE")
+                        if ok and not issecretvalue(filtered) and filtered == false then
+                            -- false = aura passes the filter = player CAN dispel it
+                            canDispel = true
+                        end
+                    end
                 end
                 if not indicatorBooleans["dispels"]["dispellableByMe"] or canDispel then
                     local ok, color = pcall(GetAuraDispelTypeColor, self.states.displayedUnit, auraInstanceID, midnightDispelCurve)
@@ -1620,18 +1627,18 @@ local function UnitButton_UpdateDebuffs(self, isFullUpdate)
                 else
                     r, g, b, a = color.r, color.g, color.b, color.a
                 end
+                -- Pass curve alpha through: physical/bleed have a=0 in the
+                -- curve so they render invisible at C level even when
+                -- secret values prevent Lua-level filtering.
                 if highlightType == "gradient" or highlightType == "gradient-half" then
-                    -- Gradient alpha texture: white pixels with alpha fading
-                    -- from opaque (bottom) to transparent (top). SetVertexColor
-                    -- tints it with the dispel color at C level.
                     highlight:SetTexture("Interface\\AddOns\\Cell\\Media\\GradientAlpha")
-                    highlight:SetVertexColor(r, g, b, 1)
+                    highlight:SetVertexColor(r, g, b, a or 1)
                 elseif highlightType == "current" or highlightType == "current+" then
                     highlight:SetTexture(Cell.vars.texture)
-                    highlight:SetVertexColor(r, g, b, 1)
+                    highlight:SetVertexColor(r, g, b, a or 1)
                 else -- "entire"
                     highlight:SetTexture(Cell.vars.whiteTexture)
-                    highlight:SetVertexColor(r, g, b, 0.5)
+                    highlight:SetVertexColor(r, g, b, a or 0.5)
                 end
                 highlight:Show()
                 self._midnightDispelHighlightShown = true
