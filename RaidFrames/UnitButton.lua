@@ -1719,15 +1719,18 @@ local function HandleBuff(self, auraInfo)
             if resolvedId then
                 -- Fingerprinting succeeded — process through normal indicator path
                 if resolvedCategory == "external" then
+                    local shownByDedicated = false
                     if enabledIndicators["defensiveCooldowns"] and I.IsDefensiveCooldown(resolvedName, resolvedId) and self._buffs.defensiveFound < indicatorNums["defensiveCooldowns"] then
                         self._buffs.defensiveFound = self._buffs.defensiveFound + 1
                         self.indicators.defensiveCooldowns[self._buffs.defensiveFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
+                        shownByDedicated = true
                     end
                     if enabledIndicators["externalCooldowns"] and I.IsExternalCooldown(resolvedName, resolvedId, source, unit) and self._buffs.externalFound < indicatorNums["externalCooldowns"] then
                         self._buffs.externalFound = self._buffs.externalFound + 1
                         self.indicators.externalCooldowns[self._buffs.externalFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
+                        shownByDedicated = true
                     end
-                    if enabledIndicators["allCooldowns"] and (I.IsExternalCooldown(resolvedName, resolvedId, source, unit) or I.IsDefensiveCooldown(resolvedName, resolvedId)) and self._buffs.allFound < indicatorNums["allCooldowns"] then
+                    if not shownByDedicated and enabledIndicators["allCooldowns"] and (I.IsExternalCooldown(resolvedName, resolvedId, source, unit) or I.IsDefensiveCooldown(resolvedName, resolvedId)) and self._buffs.allFound < indicatorNums["allCooldowns"] then
                         self._buffs.allFound = self._buffs.allFound + 1
                         self.indicators.allCooldowns[self._buffs.allFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
                     end
@@ -1749,19 +1752,22 @@ local function HandleBuff(self, auraInfo)
             I.UpdateCustomIndicators(self, auraInfo)
         else
             -- defensiveCooldowns
+            local shownByDedicated = false
             if enabledIndicators["defensiveCooldowns"] and I.IsDefensiveCooldown(name, spellId) and self._buffs.defensiveFound < indicatorNums["defensiveCooldowns"] then
                 self._buffs.defensiveFound = self._buffs.defensiveFound + 1
                 self.indicators.defensiveCooldowns[self._buffs.defensiveFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
+                shownByDedicated = true
             end
 
             -- externalCooldowns
             if enabledIndicators["externalCooldowns"] and I.IsExternalCooldown(name, spellId, source, unit) and self._buffs.externalFound < indicatorNums["externalCooldowns"] then
                 self._buffs.externalFound = self._buffs.externalFound + 1
                 self.indicators.externalCooldowns[self._buffs.externalFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
+                shownByDedicated = true
             end
 
-            -- allCooldowns
-            if enabledIndicators["allCooldowns"] and (I.IsExternalCooldown(name, spellId, source, unit) or I.IsDefensiveCooldown(name, spellId)) and self._buffs.allFound < indicatorNums["allCooldowns"] then
+            -- allCooldowns: skip if already shown by dedicated defensive/external indicator
+            if not shownByDedicated and enabledIndicators["allCooldowns"] and (I.IsExternalCooldown(name, spellId, source, unit) or I.IsDefensiveCooldown(name, spellId)) and self._buffs.allFound < indicatorNums["allCooldowns"] then
                 self._buffs.allFound = self._buffs.allFound + 1
                 self.indicators.allCooldowns[self._buffs.allFound]:SetCooldown(start, duration, nil, icon, count, auraInfo.refreshing)
             end
@@ -1809,11 +1815,13 @@ local function UnitButton_UpdateBuffs(self, isFullUpdate)
 
     -- check Mirror Image
     if self._mirror_image and I.IsDefensiveCooldown(55342) then -- exists and enabled
-        if self._buffs.defensiveFound < indicatorNums["defensiveCooldowns"] then
+        local miShown = false
+        if enabledIndicators["defensiveCooldowns"] and self._buffs.defensiveFound < indicatorNums["defensiveCooldowns"] then
             self._buffs.defensiveFound = self._buffs.defensiveFound + 1
             self.indicators.defensiveCooldowns[self._buffs.defensiveFound]:SetCooldown(self._mirror_image, 40, nil, 135994, 0)
+            miShown = true
         end
-        if self._buffs.allFound < indicatorNums["allCooldowns"] then
+        if not miShown and self._buffs.allFound < indicatorNums["allCooldowns"] then
             self._buffs.allFound = self._buffs.allFound + 1
             self.indicators.allCooldowns[self._buffs.allFound]:SetCooldown(self._mirror_image, 40, nil, 135994, 0)
         end
@@ -1821,11 +1829,13 @@ local function UnitButton_UpdateBuffs(self, isFullUpdate)
 
     -- check Mass Barrier (self)
     if self._mass_barrier and I.IsExternalCooldown(414660) then -- exists and enabled
-        if self._buffs.externalFound < indicatorNums["externalCooldowns"] then
+        local mbShown = false
+        if enabledIndicators["externalCooldowns"] and self._buffs.externalFound < indicatorNums["externalCooldowns"] then
             self._buffs.externalFound = self._buffs.externalFound + 1
             self.indicators.externalCooldowns[self._buffs.externalFound]:SetCooldown(self._mass_barrier, 60, nil, self._mass_barrier_icon, 0)
+            mbShown = true
         end
-        if self._buffs.allFound < indicatorNums["allCooldowns"] then
+        if not mbShown and self._buffs.allFound < indicatorNums["allCooldowns"] then
             self._buffs.allFound = self._buffs.allFound + 1
             self.indicators.allCooldowns[self._buffs.allFound]:SetCooldown(self._mass_barrier, 60, nil, self._mass_barrier_icon, 0)
         end
