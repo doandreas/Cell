@@ -1,7 +1,7 @@
 local addonName, Cell = ...
 
 -- number of built-in indicators
-Cell.defaults.builtIns = 30
+Cell.defaults.builtIns = 31
 
 Cell.defaults.indicatorIndices = {
     ["nameText"] = 1,
@@ -34,6 +34,7 @@ Cell.defaults.indicatorIndices = {
     ["crowdControls"] = 28,
     ["actions"] = 29,
     ["missingBuffs"] = 30,
+    ["itemLevel"] = 31,
 }
 
 Cell.defaults.layout = {
@@ -537,6 +538,17 @@ Cell.defaults.layout = {
             ["size"] = {13, 13},
             ["orientation"] = "right-to-left",
         }, -- 30
+        {
+            ["name"] = "Item Level",
+            ["indicatorName"] = "itemLevel",
+            ["type"] = "built-in",
+            ["enabled"] = false,
+            ["position"] = {"BOTTOMLEFT", "button", "BOTTOMLEFT", 1, 2},
+            ["frameLevel"] = 2,
+            ["font"] = {"Cell ".._G.DEFAULT, 9, "Outline", false},
+            ["color"] = {1, 1, 1},
+            ["hideInCombat"] = true,
+        }, -- 31
     },
 }
 

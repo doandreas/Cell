@@ -2489,3 +2489,360 @@ function I.ShowMissingBuff(unit, icon)
 
     F.HandleUnitButton("unit", unit, ShowMissingBuff, missingBuffsCounter[unit], icon)
 end
+
+-------------------------------------------------
+-- Item Level
+-------------------------------------------------
+local itemLevelEnabled = false
+local itemLevelCache = {} -- [guid] = { itemLevel=number, lastUpdate=time }
+local itemLevelQueue = {} -- [guid] = { unit=string, requested=time }
+
+local GetTooltipData = C_TooltipInfo and C_TooltipInfo.GetInventoryItem
+local GetAverageItemLevel = GetAverageItemLevel
+
+local IL_SLOTS = {
+    INVSLOT_HEAD,
+    INVSLOT_NECK,
+    INVSLOT_SHOULDER,
+    INVSLOT_CHEST,
+    INVSLOT_WAIST,
+    INVSLOT_LEGS,
+    INVSLOT_FEET,
+    INVSLOT_WRIST,
+    INVSLOT_HAND,
+    INVSLOT_FINGER1,
+    INVSLOT_FINGER2,
+    INVSLOT_TRINKET1,
+    INVSLOT_TRINKET2,
+    INVSLOT_BACK,
+    INVSLOT_MAINHAND,
+    INVSLOT_OFFHAND,
+}
+
+local IL_TWO_HANDED = {
+    INVTYPE_2HWEAPON = true,
+    INVTYPE_RANGED = true,
+    INVTYPE_RANGEDRIGHT = true,
+}
+
+local IL_PATTERN = ITEM_LEVEL and ITEM_LEVEL:gsub("%%d", "(%%d+)") or "Item Level (%d+)"
+local IL_ALT_PATTERN = ITEM_LEVEL_ALT and ITEM_LEVEL_ALT:gsub("%%d %(%%d%)", "%%d+ %%((%%d+)%%)") or nil
+
+local function IL_GetSlotLevel(data)
+    if not data then return 0 end
+    local firstLine = data.lines and data.lines[1]
+    local firstText = firstLine and firstLine.leftText
+    if not firstText or firstText == RETRIEVING_ITEM_INFO then return nil end
+
+    for i = 2, #data.lines do
+        local line = data.lines[i]
+        local text = line and line.leftText
+        if text and text ~= "" then
+            local level = text:match(IL_PATTERN)
+            if not level and IL_ALT_PATTERN then
+                level = text:match(IL_ALT_PATTERN)
+            end
+            if level then
+                return tonumber(level)
+            end
+        end
+    end
+    return 0
+end
+
+local function IL_CalcItemLevel(unit, guid)
+    if not GetTooltipData then return end
+    if not UnitExists(unit) or UnitGUID(unit) ~= guid then return end
+
+    local spec = GetInspectSpecialization and GetInspectSpecialization(unit)
+
+    -- gather tooltip data for all slots
+    local mainData = GetTooltipData(unit, INVSLOT_MAINHAND)
+    local offData = GetTooltipData(unit, INVSLOT_OFFHAND)
+    local mainLevel = IL_GetSlotLevel(mainData)
+    local offLevel = IL_GetSlotLevel(offData)
+
+    if not mainLevel or not offLevel then return end -- data not ready
+
+    local total = 0
+
+    -- handle two-handed weapons
+    local mainLink = GetInventoryItemLink(unit, INVSLOT_MAINHAND)
+    if mainLink then
+        local _, _, quality, _, _, _, _, _, equipLoc = C_Item.GetItemInfo(mainLink)
+        if spec ~= 72 and equipLoc and (quality == Enum.ItemQuality.Artifact or IL_TWO_HANDED[equipLoc]) then
+            total = total + max(mainLevel, offLevel) * 2
+        else
+            total = total + mainLevel + offLevel
+        end
+    else
+        total = total + mainLevel + offLevel
+    end
+
+    -- other slots (excluding main/off hand)
+    for _, slot in ipairs(IL_SLOTS) do
+        if slot ~= INVSLOT_MAINHAND and slot ~= INVSLOT_OFFHAND then
+            local data = GetTooltipData(unit, slot)
+            local slotLevel = IL_GetSlotLevel(data)
+            if not slotLevel then return end -- data not ready
+            total = total + slotLevel
+        end
+    end
+
+    if total > 0 then
+        local ilvl = floor(total / 16 + 0.5)
+        itemLevelCache[guid] = { itemLevel = ilvl, lastUpdate = GetTime() }
+        return ilvl
+    end
+end
+
+local function IL_UpdateButton(b, ilvl)
+    if ilvl and ilvl > 0 then
+        b.indicators.itemLevel:SetValue(ilvl)
+        b.indicators.itemLevel:Show()
+    end
+end
+
+local function IL_UpdateUnit(unit, guid)
+    if not guid then guid = UnitGUID(unit) end
+    if not guid then return end
+
+    local ilvl
+    if UnitIsUnit(unit, "player") then
+        local _, equipped = GetAverageItemLevel()
+        ilvl = equipped and floor(equipped + 0.5) or 0
+        if ilvl > 0 then
+            itemLevelCache[guid] = { itemLevel = ilvl, lastUpdate = GetTime() }
+        end
+    else
+        local cached = itemLevelCache[guid]
+        if cached then ilvl = cached.itemLevel end
+    end
+
+    if ilvl then
+        F.HandleUnitButton("unit", unit, IL_UpdateButton, ilvl)
+    end
+end
+
+local function IL_RequestInspect(unit)
+    if InCombatLockdown() then return end
+    if not UnitExists(unit) or not UnitIsPlayer(unit) then return end
+    if UnitIsUnit(unit, "player") then
+        IL_UpdateUnit(unit)
+        return
+    end
+    if not CanInspect(unit) then return end
+
+    local guid = UnitGUID(unit)
+    if not guid then return end
+
+    -- don't re-request within 3 seconds
+    if itemLevelQueue[guid] and GetTime() - itemLevelQueue[guid].requested < 3 then return end
+    -- don't re-request if we have recent data (within 60 seconds)
+    if itemLevelCache[guid] and GetTime() - itemLevelCache[guid].lastUpdate < 60 then
+        IL_UpdateUnit(unit, guid)
+        return
+    end
+
+    itemLevelQueue[guid] = { unit = unit, requested = GetTime() }
+    NotifyInspect(unit)
+end
+
+-- event frame for item level inspection
+local ilFrame = CreateFrame("Frame")
+ilFrame:Hide()
+
+local ilInspectQueue = {} -- units to inspect sequentially
+local ilInspectIndex = 0
+local IL_INSPECT_INTERVAL = 1.5 -- seconds between inspect requests
+
+ilFrame:SetScript("OnUpdate", function(self, elapsed)
+    if not itemLevelEnabled or InCombatLockdown() then
+        self:Hide()
+        return
+    end
+
+    self._elapsed = (self._elapsed or 0) + elapsed
+    if self._elapsed < IL_INSPECT_INTERVAL then return end
+    self._elapsed = 0
+
+    ilInspectIndex = ilInspectIndex + 1
+    if ilInspectIndex > #ilInspectQueue then
+        wipe(ilInspectQueue)
+        ilInspectIndex = 0
+        self:Hide()
+        return
+    end
+
+    local unit = ilInspectQueue[ilInspectIndex]
+    if unit and UnitExists(unit) then
+        IL_RequestInspect(unit)
+    end
+end)
+
+ilFrame:RegisterEvent("INSPECT_READY")
+ilFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+ilFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+ilFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+
+ilFrame:SetScript("OnEvent", function(self, event, ...)
+    if not itemLevelEnabled then return end
+
+    if event == "INSPECT_READY" then
+        local guid = ...
+        if itemLevelQueue[guid] then
+            local unit = itemLevelQueue[guid].unit
+            if unit and UnitExists(unit) and UnitGUID(unit) == guid then
+                local ilvl = IL_CalcItemLevel(unit, guid)
+                if ilvl then
+                    F.HandleUnitButton("unit", unit, IL_UpdateButton, ilvl)
+                end
+            end
+            itemLevelQueue[guid] = nil
+        end
+
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        -- leaving combat: show cached values and queue inspections
+        I.UpdateAllItemLevels()
+
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        -- entering combat: hide all
+        F.IterateAllUnitButtons(function(b)
+            b.indicators.itemLevel:Hide()
+        end, true)
+        ilFrame:Hide()
+
+    elseif event == "GROUP_ROSTER_UPDATE" then
+        if not InCombatLockdown() then
+            -- delay slightly to let unit IDs settle
+            C_Timer.After(0.5, function()
+                if not InCombatLockdown() and itemLevelEnabled then
+                    I.UpdateAllItemLevels()
+                end
+            end)
+        end
+    end
+end)
+
+function I.UpdateAllItemLevels()
+    if InCombatLockdown() or not itemLevelEnabled then return end
+
+    wipe(ilInspectQueue)
+    ilInspectIndex = 0
+
+    F.IterateAllUnitButtons(function(b)
+        local unit = b.states.displayedUnit or b.states.unit
+        if unit and UnitExists(unit) and UnitIsPlayer(unit) then
+            local guid = UnitGUID(unit)
+            if guid then
+                -- show cached value immediately
+                if UnitIsUnit(unit, "player") then
+                    IL_UpdateUnit(unit, guid)
+                elseif itemLevelCache[guid] then
+                    IL_UpdateButton(b, itemLevelCache[guid].itemLevel)
+                    -- re-inspect if data is old (> 60s)
+                    if GetTime() - itemLevelCache[guid].lastUpdate > 60 then
+                        tinsert(ilInspectQueue, unit)
+                    end
+                else
+                    tinsert(ilInspectQueue, unit)
+                end
+            end
+        end
+    end, true)
+
+    if #ilInspectQueue > 0 then
+        ilFrame._elapsed = IL_INSPECT_INTERVAL -- trigger first inspect immediately
+        ilFrame:Show()
+    end
+end
+
+function I.ShowCachedItemLevel(b, unit, guid)
+    if not itemLevelEnabled or InCombatLockdown() then return end
+    if UnitIsUnit(unit, "player") then
+        local _, equipped = GetAverageItemLevel()
+        local ilvl = equipped and floor(equipped + 0.5) or 0
+        if ilvl > 0 then
+            itemLevelCache[guid] = { itemLevel = ilvl, lastUpdate = GetTime() }
+            b.indicators.itemLevel:SetValue(ilvl)
+            b.indicators.itemLevel:Show()
+        end
+    elseif itemLevelCache[guid] then
+        b.indicators.itemLevel:SetValue(itemLevelCache[guid].itemLevel)
+        b.indicators.itemLevel:Show()
+    end
+end
+
+function I.EnableItemLevel(enabled)
+    itemLevelEnabled = enabled
+    if enabled and not InCombatLockdown() then
+        I.UpdateAllItemLevels()
+    elseif not enabled then
+        F.IterateAllUnitButtons(function(b)
+            b.indicators.itemLevel:Hide()
+        end, true)
+        ilFrame:Hide()
+    end
+end
+
+-- Indicator SetFont
+local function ItemLevel_SetFont(self, font, size, outline, shadow)
+    font = F.GetFont(font)
+    local flags
+    if outline == "None" then
+        flags = ""
+    elseif outline == "Outline" then
+        flags = "OUTLINE"
+    else
+        flags = "OUTLINE,MONOCHROME"
+    end
+    self.text:SetFont(font, size, flags)
+    if shadow then
+        self.text:SetShadowOffset(1, -1)
+        self.text:SetShadowColor(0, 0, 0, 1)
+    else
+        self.text:SetShadowOffset(0, 0)
+        self.text:SetShadowColor(0, 0, 0, 0)
+    end
+    self:SetSize(self.text:GetStringWidth(), size)
+end
+
+local function ItemLevel_SetPoint(self, point, relativeTo, relativePoint, x, y)
+    self.text:ClearAllPoints()
+    if string.find(point, "LEFT$") then
+        self.text:SetPoint("LEFT")
+    elseif string.find(point, "RIGHT$") then
+        self.text:SetPoint("RIGHT")
+    else
+        self.text:SetPoint("CENTER")
+    end
+    self:_SetPoint(point, relativeTo, relativePoint, x, y)
+end
+
+local function ItemLevel_SetColor(self, r, g, b)
+    self.text:SetTextColor(r, g, b)
+end
+
+local function ItemLevel_SetValue(self, ilvl)
+    if ilvl and ilvl > 0 then
+        self.text:SetText(ilvl)
+        self:SetSize(self.text:GetStringWidth(), self.text:GetStringHeight())
+    else
+        self.text:SetText("")
+    end
+end
+
+function I.CreateItemLevel(parent)
+    local itemLevel = CreateFrame("Frame", parent:GetName().."ItemLevel", parent.widgets.indicatorFrame)
+    parent.indicators.itemLevel = itemLevel
+    itemLevel:Hide()
+
+    local text = itemLevel:CreateFontString(nil, "OVERLAY", "CELL_FONT_STATUS")
+    itemLevel.text = text
+
+    itemLevel.SetFont = ItemLevel_SetFont
+    itemLevel._SetPoint = itemLevel.SetPoint
+    itemLevel.SetPoint = ItemLevel_SetPoint
+    itemLevel.SetColor = ItemLevel_SetColor
+    itemLevel.SetValue = ItemLevel_SetValue
+end

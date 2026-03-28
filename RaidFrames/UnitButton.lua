@@ -73,6 +73,7 @@ local GetAuraDataBySlot = C_UnitAuras.GetAuraDataBySlot
 local GetAuraDuration = C_UnitAuras and C_UnitAuras.GetAuraDuration
 local GetAuraApplicationDisplayCount = C_UnitAuras and C_UnitAuras.GetAuraApplicationDisplayCount
 local GetAuraDispelTypeColor = C_UnitAuras and C_UnitAuras.GetAuraDispelTypeColor
+local IsAuraFilteredOutByInstanceID = C_UnitAuras and C_UnitAuras.IsAuraFilteredOutByInstanceID
 
 -- Build a color curve for dispel type coloring (Midnight 12.0)
 -- Maps SpellDispelType indices to Cell's debuff type colors
@@ -199,6 +200,10 @@ local function ResetIndicators()
         -- update healthThresholds
         elseif t["indicatorName"] == "healthThresholds" then
             I.UpdateHealthThresholds()
+
+        -- update itemLevel
+        elseif t["indicatorName"] == "itemLevel" then
+            I.EnableItemLevel(t["enabled"])
         end
 
         -- update extra
@@ -667,6 +672,8 @@ local function UpdateIndicators(layout, indicatorName, setting, value, value2)
                 F.IterateAllUnitButtons(function(b)
                     UpdateIndicatorParentVisibility(b, indicatorName, value)
                 end, true)
+            elseif indicatorName == "itemLevel" then
+                I.EnableItemLevel(value)
             else
                 -- refresh
                 F.IterateAllUnitButtons(function(b)
@@ -1220,7 +1227,9 @@ local function HandleDebuff(self, auraInfo)
             if Cell.isMidnight and auraInfo._hasSecrets then
                 -- Can't check blacklist/bigDebuffs with secret spellId, show as normal
                 -- But respect dispellableByMe filter via canActivePlayerDispel
-                if not indicatorBooleans["debuffs"] or auraInfo.canActivePlayerDispel then
+                local canDispelDebuff = auraInfo.canActivePlayerDispel
+                if issecretvalue(canDispelDebuff) then canDispelDebuff = false end
+                if not indicatorBooleans["debuffs"] or canDispelDebuff then
                     self._debuffs_normal[auraInstanceID] = true
                 end
             elseif not Cell.vars.debuffBlacklist[spellId] then
@@ -1270,13 +1279,35 @@ local function HandleDebuff(self, auraInfo)
         if enabledIndicators["dispels"] then
             if Cell.isMidnight and auraInfo._hasSecrets and GetAuraDispelTypeColor and midnightDispelCurve then
                 -- Midnight: use secret-safe API to get dispel type color
-                -- Filter by dispellableByMe using the WoW-provided canActivePlayerDispel field
-                if not indicatorBooleans["dispels"]["dispellableByMe"] or auraInfo.canActivePlayerDispel then
+                -- Filter by dispellableByMe: try canActivePlayerDispel first,
+                -- fall back to IsAuraFilteredOutByInstanceID, default to showing
+                local canDispel = auraInfo.canActivePlayerDispel
+                if issecretvalue(canDispel) then
+                    -- canActivePlayerDispel is secret; default to showing.
+                    -- Physical debuffs are still filtered out by the color curve
+                    -- check below (isPhysical). Better to over-show than miss a dispel.
+                    canDispel = true
+                end
+                if not indicatorBooleans["dispels"]["dispellableByMe"] or canDispel then
                     local ok, color = pcall(GetAuraDispelTypeColor, self.states.displayedUnit, auraInstanceID, midnightDispelCurve)
                     if ok and color then
-                        auraInfo._dispelColor = color
-                        if not self._debuffs_midnightDispelColor then
-                            self._debuffs_midnightDispelColor = color
+                        -- Skip non-dispellable (physical/none) debuffs: index 0
+                        -- maps to red (0.80,0,0) in the curve. Check if the color
+                        -- is NOT the physical-red before treating it as dispellable.
+                        local isPhysical = false
+                        if color.GetRGBA then
+                            local cr, cg, cb = color:GetRGBA()
+                            if not issecretvalue(cr) then
+                                isPhysical = (cr > 0.79 and cg < 0.01 and cb < 0.01)
+                            end
+                        elseif color.r and not issecretvalue(color.r) then
+                            isPhysical = (color.r > 0.79 and color.g < 0.01 and color.b < 0.01)
+                        end
+                        if not isPhysical then
+                            auraInfo._dispelColor = color
+                            if not self._debuffs_midnightDispelColor then
+                                self._debuffs_midnightDispelColor = color
+                            end
                         end
                     end
                 end
@@ -1331,21 +1362,47 @@ local function MidnightShowDebuff(indicator, unit, auraInstanceID, auraInfo)
     local frame = indicator
     -- Set icon texture (C-level SetTexture accepts secrets)
     frame.icon:SetTexture(auraInfo.icon)
+
+    -- Set border/backdrop color from dispel type
+    local dispelName = auraInfo._safeDispelName or ""
+    if auraInfo._dispelColor then
+        -- Use the secret-safe color from GetAuraDispelTypeColor
+        local color = auraInfo._dispelColor
+        local r, g, b
+        if color.GetRGBA then
+            r, g, b = color:GetRGBA()
+        else
+            r, g, b = color.r, color.g, color.b
+        end
+        if frame.SetBackdropColor then frame:SetBackdropColor(r, g, b) end
+        if frame.border then frame.border:SetColorTexture(r, g, b) end
+        if frame.cooldown and frame.cooldown.SetSwipeColor then frame.cooldown:SetSwipeColor(r, g, b) end
+    elseif dispelName ~= "" then
+        local r, g, b = I.GetDebuffTypeColor(dispelName)
+        if frame.SetBackdropColor then frame:SetBackdropColor(r, g, b) end
+        if frame.border then frame.border:SetColorTexture(r, g, b) end
+        if frame.cooldown and frame.cooldown.SetSwipeColor then frame.cooldown:SetSwipeColor(r, g, b) end
+    else
+        if frame.SetBackdropColor then frame:SetBackdropColor(0, 0, 0) end
+        if frame.border then frame.border:SetColorTexture(0, 0, 0) end
+        if frame.cooldown and frame.cooldown.SetSwipeColor then frame.cooldown:SetSwipeColor(0, 0, 0, 0.77) end
+    end
+
     -- Set cooldown using duration object (secret-safe)
     if GetAuraDuration then
         local durObj = GetAuraDuration(unit, auraInstanceID)
-        if durObj and frame.cooldown.SetCooldownFromDurationObject then
+        if durObj and frame.cooldown and frame.cooldown.SetCooldownFromDurationObject then
             frame.cooldown:Show()
             frame.cooldown:SetCooldownFromDurationObject(durObj)
             if frame.border then frame.border:Hide() end
-        elseif durObj and frame.cooldown._SetCooldown then
+        elseif durObj and frame.cooldown and frame.cooldown._SetCooldown then
             -- fallback: try the raw cooldown widget
             frame.cooldown:Show()
             if frame.border then frame.border:Hide() end
         else
             -- no duration - show without cooldown
             if frame.cooldown then frame.cooldown:Hide() end
-            if frame.border then frame.border:Show(); frame.border:SetColorTexture(0, 0, 0) end
+            if frame.border then frame.border:Show() end
         end
     end
     -- Set stack count using secret-safe API
@@ -1490,6 +1547,7 @@ local function UnitButton_UpdateDebuffs(self, isFullUpdate)
             local auraInfo = self._debuffs_cache[auraInstanceID]
             if auraInfo and startIndex <= indicatorNums["debuffs"] then
                 if Cell.isMidnight and auraInfo._hasSecrets then
+                    P.Size(self.indicators.debuffs[startIndex], self.indicators.debuffs.bigSize[1], self.indicators.debuffs.bigSize[2])
                     MidnightShowDebuff(self.indicators.debuffs[startIndex], unit, auraInstanceID, auraInfo)
                     self.indicators.debuffs[startIndex].spellId = auraInfo._safeSpellId
                 else
@@ -1515,6 +1573,7 @@ local function UnitButton_UpdateDebuffs(self, isFullUpdate)
             local auraInfo = self._debuffs_cache[auraInstanceID]
             if auraInfo and startIndex <= indicatorNums["debuffs"] then
                 if Cell.isMidnight and auraInfo._hasSecrets then
+                    P.Size(self.indicators.debuffs[startIndex], self.indicators.debuffs.normalSize[1], self.indicators.debuffs.normalSize[2])
                     MidnightShowDebuff(self.indicators.debuffs[startIndex], unit, auraInstanceID, auraInfo)
                     self.indicators.debuffs[startIndex].spellId = auraInfo._safeSpellId
                 else
@@ -1548,24 +1607,32 @@ local function UnitButton_UpdateDebuffs(self, isFullUpdate)
     if F.UnitInGroup(unit) or UnitIsFriend("player", unit) then
         self.indicators.dispels:SetDispels(self._debuffs_dispel)
         -- Midnight: use secret-safe dispel color to show highlight directly
-        -- Note: color.r/g/b are secret values; SetVertexColor (C-level) accepts them,
-        -- but CreateColor/SetGradient (Lua-level) cannot.
+        -- Uses GradientAlpha texture + SetVertexColor (C-level, accepts secrets)
+        -- to preserve the gradient visual that SetGradient/CreateColor cannot do.
         if Cell.isMidnight and self._debuffs_midnightDispelColor then
             local color = self._debuffs_midnightDispelColor
             local highlight = self.indicators.dispels.highlight
             local highlightType = self.indicators.dispels.highlightType
             if highlightType and highlightType ~= "none" and highlight then
-                -- Use "entire" overlay style for all types since gradient needs
-                -- CreateColor which can't handle secret values.
-                -- Handle both ColorMixin (:GetRGBA) and raw table (.r/.g/.b) return types
                 local r, g, b, a
                 if color.GetRGBA then
                     r, g, b, a = color:GetRGBA()
                 else
                     r, g, b, a = color.r, color.g, color.b, color.a
                 end
-                highlight:SetTexture(Cell.vars.whiteTexture)
-                highlight:SetVertexColor(r, g, b, a or 0.5)
+                if highlightType == "gradient" or highlightType == "gradient-half" then
+                    -- Gradient alpha texture: white pixels with alpha fading
+                    -- from opaque (bottom) to transparent (top). SetVertexColor
+                    -- tints it with the dispel color at C level.
+                    highlight:SetTexture("Interface\\AddOns\\Cell\\Media\\GradientAlpha")
+                    highlight:SetVertexColor(r, g, b, 1)
+                elseif highlightType == "current" or highlightType == "current+" then
+                    highlight:SetTexture(Cell.vars.texture)
+                    highlight:SetVertexColor(r, g, b, 1)
+                else -- "entire"
+                    highlight:SetTexture(Cell.vars.whiteTexture)
+                    highlight:SetVertexColor(r, g, b, 0.5)
+                end
                 highlight:Show()
                 self._midnightDispelHighlightShown = true
             end
@@ -2848,11 +2915,16 @@ UnitButton_UpdateStatusText = function(self)
     self.states.guid = UnitGUID(unit) -- update!
     if not self.states.guid then return end
 
-    if not UnitIsConnected(unit) and UnitIsPlayer(unit) then
+    local isConnected = UnitIsConnected(unit)
+    local isPlayer = UnitIsPlayer(unit)
+    if Cell.isMidnight and issecretvalue(isConnected) then isConnected = true end
+    if Cell.isMidnight and issecretvalue(isPlayer) then isPlayer = false end
+
+    if not isConnected and isPlayer then
         statusText:Show()
         statusText:SetStatus("OFFLINE")
         statusText:ShowTimer()
-    elseif UnitIsAFK(unit) then
+    elseif not Cell.isMidnight and UnitIsAFK(unit) then
         statusText:Show()
         statusText:SetStatus("AFK")
         statusText:ShowTimer()
@@ -3084,6 +3156,19 @@ UnitButton_UpdateAll = function(self)
     end
 
     UnitButton_UpdateAuras(self)
+
+    -- item level (out of combat only)
+    if enabledIndicators["itemLevel"] and not InCombatLockdown() then
+        local unit = self.states.displayedUnit
+        if unit and UnitExists(unit) and UnitIsPlayer(unit) then
+            local guid = UnitGUID(unit)
+            if guid then
+                I.ShowCachedItemLevel(self, unit, guid)
+            end
+        end
+    elseif not enabledIndicators["itemLevel"] then
+        self.indicators.itemLevel:Hide()
+    end
 end
 
 -------------------------------------------------
@@ -4466,6 +4551,7 @@ function CellUnitButton_OnLoad(button)
     I.CreateCrowdControls(button)
     I.CreateActions(button)
     I.CreateMissingBuffs(button)
+    I.CreateItemLevel(button)
     I.CreateHealthThresholds(button)
     U.CreateSpellRequestIcon(button)
     U.CreateDispelRequestText(button)

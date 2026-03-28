@@ -1572,7 +1572,7 @@ if Cell.isRetail or Cell.isMists then
         ["defensiveCooldowns"] = {L["Even if disabled, the settings below affect \"Externals + Defensives\" indicator"], "enabled", "builtInDefensives", "customDefensives", "durationVisibility", "checkbutton:showAnimation", "glowOptions", "size", "num:5", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["allCooldowns"] = {"enabled", "durationVisibility", "checkbutton:showAnimation", "glowOptions", "size", "num:5", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["tankActiveMitigation"] = {"|cffb7b7b7"..I.GetTankActiveMitigationString(), "enabled", "color-class", "size", "position", "frameLevel"},
-        ["dispels"] = {"|cffb7b7b7Midnight: In combat, highlight uses solid overlay. Colors: |cff3399ffMagic|r |cff9900ffCurse|r |cff996600Disease|r |cff009900Poison|r |cffcc0000Bleed|r", "enabled", "dispelFilters", "dispelBlacklist", "iconStyle", "orientation", "size-square", "position", "frameLevel"},
+        ["dispels"] = {"|cffb7b7b7Midnight: Gradient highlight works in combat via secret-safe API. Colors: |cff3399ffMagic|r |cff9900ffCurse|r |cff996600Disease|r |cff009900Poison|r |cffcc0000Bleed|r", "enabled", "dispelFilters", "dispelBlacklist", "iconStyle", "orientation", "size-square", "position", "frameLevel"},
         ["debuffs"] = {"enabled", "checkbutton:dispellableByMe", "debuffBlacklist", "bigDebuffs", "durationVisibility", "checkbutton2:showAnimation", "checkbutton3:showTooltip:"..DEBUFFS_TOOLTIP1, "checkbutton4:enableBlacklistShortcut:"..DEBUFFS_TOOLTIP2, "size-normal-big", "num:10", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["raidDebuffs"] = {"|cffb7b7b7"..L["You can config debuffs in %s"]:format(Cell.GetAccentColorString()..L["Raid Debuffs"].."|r"), "enabled", "checkbutton:onlyShowTopGlow", "durationVisibility", "checkbutton2:showTooltip:"..DEBUFFS_TOOLTIP1, "size-border", "num:3", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["privateAuras"] = {"|cffb7b7b7"..L["Due to restrictions of the private aura system, this indicator can only use Blizzard style."], "enabled", "privateAuraOptions", "size-square", "position", "frameLevel"},
@@ -1582,6 +1582,7 @@ if Cell.isRetail or Cell.isMists then
         ["actions"] = {"|cffb7b7b7"..L["Play animation when the unit uses a specific spell/item. The list is global shared, not layout-specific."], "enabled", "actionsPreview", "actionsList"},
         ["healthThresholds"] = {"enabled", "thresholds", "thickness"},
         ["missingBuffs"] = {"|cffb7b7b7"..(L["%s in Utilities must be enabled to make this indicator work."]:format(Cell.GetAccentColorString()..L["Buff Tracker"].."|r")), "enabled", "size-square", "orientation", "position", "frameLevel"},
+        ["itemLevel"] = {"|cffb7b7b7Only shown out of combat. Inspects group members to retrieve their item level.", "enabled", "checkbutton:hideInCombat", "color", "position", "frameLevel", "font-noOffset"},
     }
 
     if Cell.isMists then
@@ -1616,7 +1617,7 @@ elseif Cell.isCata or Cell.isWrath then
         ["externalCooldowns"] = {L["Even if disabled, the settings below affect \"Externals + Defensives\" indicator"], "enabled", "builtInExternals", "customExternals", "durationVisibility", "checkbutton:showAnimation", "glowOptions", "size", "num:5", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["defensiveCooldowns"] = {L["Even if disabled, the settings below affect \"Externals + Defensives\" indicator"], "enabled", "builtInDefensives", "customDefensives", "durationVisibility", "checkbutton:showAnimation", "glowOptions", "size", "num:5", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["allCooldowns"] = {"enabled", "durationVisibility", "checkbutton:showAnimation", "glowOptions", "size", "num:5", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
-        ["dispels"] = {"|cffb7b7b7Midnight: In combat, highlight uses solid overlay. Colors: |cff3399ffMagic|r |cff9900ffCurse|r |cff996600Disease|r |cff009900Poison|r |cffcc0000Bleed|r", "enabled", "dispelFilters", "dispelBlacklist", "iconStyle", "orientation", "size-square", "position", "frameLevel"},
+        ["dispels"] = {"|cffb7b7b7Midnight: Gradient highlight works in combat via secret-safe API. Colors: |cff3399ffMagic|r |cff9900ffCurse|r |cff996600Disease|r |cff009900Poison|r |cffcc0000Bleed|r", "enabled", "dispelFilters", "dispelBlacklist", "iconStyle", "orientation", "size-square", "position", "frameLevel"},
         ["debuffs"] = {"enabled", "checkbutton:dispellableByMe", "debuffBlacklist", "bigDebuffs", "durationVisibility", "checkbutton2:showAnimation", "checkbutton3:showTooltip:"..DEBUFFS_TOOLTIP1, "checkbutton4:enableBlacklistShortcut:"..DEBUFFS_TOOLTIP2, "size-normal-big", "num:10", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["raidDebuffs"] = {"|cffb7b7b7"..L["You can config debuffs in %s"]:format(Cell.GetAccentColorString()..L["Raid Debuffs"].."|r"), "enabled", "checkbutton:onlyShowTopGlow", "durationVisibility", "checkbutton2:showTooltip:"..DEBUFFS_TOOLTIP1, "size-border", "num:3", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["targetedSpells"] = {"enabled", "checkbutton:showAllSpells:"..L["Glow is only available to the spells in the list below"], "targetedSpellsList", "targetedSpellsGlow", "size-border", "num:3", "orientation", "position", "frameLevel", "font"},
@@ -1624,6 +1625,7 @@ elseif Cell.isCata or Cell.isWrath then
         ["actions"] = {"|cffb7b7b7"..L["Play animation when the unit uses a specific spell/item. The list is global shared, not layout-specific."], "enabled", "actionsPreview", "actionsList"},
         ["healthThresholds"] = {"enabled", "thresholds", "thickness"},
         ["missingBuffs"] = {"|cffb7b7b7"..(L["%s in Utilities must be enabled to make this indicator work."]:format(Cell.GetAccentColorString()..L["Buff Tracker"].."|r")), "enabled", "size-square", "orientation", "position", "frameLevel"},
+        ["itemLevel"] = {"|cffb7b7b7Only shown out of combat. Inspects group members to retrieve their item level.", "enabled", "checkbutton:hideInCombat", "color", "position", "frameLevel", "font-noOffset"},
     }
 elseif Cell.isVanilla or Cell.isTBC then
     indicatorSettings = {
@@ -1652,7 +1654,7 @@ elseif Cell.isVanilla or Cell.isTBC then
         ["externalCooldowns"] = {L["Even if disabled, the settings below affect \"Externals + Defensives\" indicator"], "enabled", "builtInExternals", "customExternals", "durationVisibility", "checkbutton:showAnimation", "glowOptions", "size", "num:5", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["defensiveCooldowns"] = {L["Even if disabled, the settings below affect \"Externals + Defensives\" indicator"], "enabled", "builtInDefensives", "customDefensives", "durationVisibility", "checkbutton:showAnimation", "glowOptions", "size", "num:5", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["allCooldowns"] = {"enabled", "durationVisibility", "checkbutton:showAnimation", "glowOptions", "size", "num:5", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
-        ["dispels"] = {"|cffb7b7b7Midnight: In combat, highlight uses solid overlay. Colors: |cff3399ffMagic|r |cff9900ffCurse|r |cff996600Disease|r |cff009900Poison|r |cffcc0000Bleed|r", "enabled", "dispelFilters", "dispelBlacklist", "iconStyle", "orientation", "size-square", "position", "frameLevel"},
+        ["dispels"] = {"|cffb7b7b7Midnight: Gradient highlight works in combat via secret-safe API. Colors: |cff3399ffMagic|r |cff9900ffCurse|r |cff996600Disease|r |cff009900Poison|r |cffcc0000Bleed|r", "enabled", "dispelFilters", "dispelBlacklist", "iconStyle", "orientation", "size-square", "position", "frameLevel"},
         ["debuffs"] = {"enabled", "checkbutton:dispellableByMe", "debuffBlacklist", "bigDebuffs", "durationVisibility", "checkbutton2:showAnimation", "checkbutton3:showTooltip:"..DEBUFFS_TOOLTIP1, "checkbutton4:enableBlacklistShortcut:"..DEBUFFS_TOOLTIP2, "size-normal-big", "num:10", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["raidDebuffs"] = {"|cffb7b7b7"..L["You can config debuffs in %s"]:format(Cell.GetAccentColorString()..L["Raid Debuffs"].."|r"), "enabled", "checkbutton:onlyShowTopGlow", "durationVisibility", "checkbutton2:showTooltip:"..DEBUFFS_TOOLTIP1, "size-border", "num:3", "orientation", "position", "frameLevel", "font1:stackFont", "font2:durationFont"},
         ["targetedSpells"] = {"enabled", "checkbutton:showAllSpells:"..L["Glow is only available to the spells in the list below"], "targetedSpellsList", "targetedSpellsGlow", "size-border", "num:3", "orientation", "position", "frameLevel", "font"},
@@ -1660,6 +1662,7 @@ elseif Cell.isVanilla or Cell.isTBC then
         ["actions"] = {"|cffb7b7b7"..L["Play animation when the unit uses a specific spell/item. The list is global shared, not layout-specific."], "enabled", "actionsPreview", "actionsList"},
         ["healthThresholds"] = {"enabled", "thresholds", "thickness"},
         ["missingBuffs"] = {"|cffb7b7b7"..(L["%s in Utilities must be enabled to make this indicator work."]:format(Cell.GetAccentColorString()..L["Buff Tracker"].."|r")), "enabled", "size-square", "orientation", "position", "frameLevel"},
+        ["itemLevel"] = {"|cffb7b7b7Only shown out of combat. Inspects group members to retrieve their item level.", "enabled", "checkbutton:hideInCombat", "color", "position", "frameLevel", "font-noOffset"},
     }
 end
 
