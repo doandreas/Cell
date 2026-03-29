@@ -1285,14 +1285,20 @@ local function HandleDebuff(self, auraInfo)
                 -- fall back to IsAuraFilteredOutByInstanceID, default to showing
                 local canDispel = auraInfo.canActivePlayerDispel
                 if issecretvalue(canDispel) then
-                    -- canActivePlayerDispel is secret; use filter API to check
-                    canDispel = false
+                    -- canActivePlayerDispel is secret; try filter API
+                    local resolved = false
                     if IsAuraFilteredOutByInstanceID then
                         local ok, filtered = pcall(IsAuraFilteredOutByInstanceID, self.states.displayedUnit, auraInstanceID, "RAID_PLAYER_DISPELLABLE")
-                        if ok and not issecretvalue(filtered) and filtered == false then
-                            -- false = aura passes the filter = player CAN dispel it
-                            canDispel = true
+                        if ok and not issecretvalue(filtered) then
+                            canDispel = (filtered == false) -- false = passes filter = dispellable
+                            resolved = true
                         end
+                    end
+                    if not resolved then
+                        -- Filter API unavailable or returned secret; default to
+                        -- showing. Physical/bleed debuffs are still hidden by the
+                        -- curve (alpha=0) so only real dispels will be visible.
+                        canDispel = true
                     end
                 end
                 if not indicatorBooleans["dispels"]["dispellableByMe"] or canDispel then
