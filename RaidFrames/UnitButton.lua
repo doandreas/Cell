@@ -82,8 +82,9 @@ if C_CurveUtil and C_CurveUtil.CreateColorCurve and Enum and Enum.LuaCurveType t
     midnightDispelCurve = C_CurveUtil.CreateColorCurve()
     midnightDispelCurve:SetType(Enum.LuaCurveType.Step)
     -- Indices from wago.tools DB2 SpellDispelType
-    -- Physical (0) and Bleed (11) use alpha=0 so they render invisible
-    -- even when secret values prevent Lua-level filtering
+    -- Physical (0) uses alpha=0 so it renders invisible at C level
+    -- even when secret values prevent Lua-level filtering.
+    -- Bleed (11) keeps alpha=1 — it's a real debuff type players track.
     local dispelColors = {
         [0]  = {r=0.80, g=0.00, b=0.00, a=0.0}, -- None (physical) = transparent
         [1]  = {r=0.20, g=0.60, b=1.00, a=1.0}, -- Magic = blue
@@ -91,7 +92,7 @@ if C_CurveUtil and C_CurveUtil.CreateColorCurve and Enum and Enum.LuaCurveType t
         [3]  = {r=0.60, g=0.40, b=0.00, a=1.0}, -- Disease = brown
         [4]  = {r=0.00, g=0.60, b=0.00, a=1.0}, -- Poison = green
         [9]  = {r=0.80, g=0.30, b=0.00, a=1.0}, -- Enrage = orange
-        [11] = {r=0.80, g=0.00, b=0.00, a=0.0}, -- Bleed = transparent
+        [11] = {r=0.80, g=0.00, b=0.00, a=1.0}, -- Bleed = red
     }
     for idx, c in pairs(dispelColors) do
         midnightDispelCurve:AddPoint(idx, CreateColor(c.r, c.g, c.b, c.a))
@@ -1285,21 +1286,11 @@ local function HandleDebuff(self, auraInfo)
                 -- fall back to IsAuraFilteredOutByInstanceID, default to showing
                 local canDispel = auraInfo.canActivePlayerDispel
                 if issecretvalue(canDispel) then
-                    -- canActivePlayerDispel is secret; try filter API
-                    local resolved = false
-                    if IsAuraFilteredOutByInstanceID then
-                        local ok, filtered = pcall(IsAuraFilteredOutByInstanceID, self.states.displayedUnit, auraInstanceID, "RAID_PLAYER_DISPELLABLE")
-                        if ok and not issecretvalue(filtered) then
-                            canDispel = (filtered == false) -- false = passes filter = dispellable
-                            resolved = true
-                        end
-                    end
-                    if not resolved then
-                        -- Filter API unavailable or returned secret; default to
-                        -- showing. Physical/bleed debuffs are still hidden by the
-                        -- curve (alpha=0) so only real dispels will be visible.
-                        canDispel = true
-                    end
+                    -- canActivePlayerDispel is secret; default to showing.
+                    -- Physical debuffs (index 0) have alpha=0 in the curve so
+                    -- they render invisible at C level. Real dispel types
+                    -- (Magic, Curse, etc.) have alpha=1 and show normally.
+                    canDispel = true
                 end
                 if not indicatorBooleans["dispels"]["dispellableByMe"] or canDispel then
                     local ok, color = pcall(GetAuraDispelTypeColor, self.states.displayedUnit, auraInstanceID, midnightDispelCurve)
@@ -1318,9 +1309,9 @@ local function HandleDebuff(self, auraInfo)
                         end
                         if not isPhysical then
                             auraInfo._dispelColor = color
-                            if not self._debuffs_midnightDispelColor then
-                                self._debuffs_midnightDispelColor = color
-                            end
+                            -- Always overwrite: a physical debuff (alpha=0) processed
+                            -- earlier must not block a later dispellable debuff's color
+                            self._debuffs_midnightDispelColor = color
                         end
                     end
                 end
